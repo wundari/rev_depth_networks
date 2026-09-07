@@ -460,7 +460,7 @@ class StereoDecoder(nn.Module):
                 temp = torch.cat(
                     (
                         padded_left + padded_right,
-                        padded_right - padded_right,
+                        padded_left - padded_right,
                     ),
                     dim=1,
                 )  # [b=2, 2xc=64, h=128, (d|w|D-d)=352]

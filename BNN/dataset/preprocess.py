@@ -2,6 +2,8 @@
 #
 #  Copyright (c) 2020. Johns Hopkins University - All rights reserved.
 
+import random
+
 import numpy as np
 import torch
 from albumentations import Compose
@@ -23,8 +25,23 @@ IMG_EXTENSIONS = [
 ]
 
 normalization = Compose(
-    [Normalize(always_apply=True), ToTensor(always_apply=True)], p=1.0
+    [Normalize(p=1.0), ToTensor(p=1.0)], p=1.0
 )
+
+
+def seed_stereo_worker(worker_id):
+    """Seed global crop randomness and Albumentations' per-worker generators."""
+    worker_seed = torch.initial_seed() % (2**32)
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
+    worker = torch.utils.data.get_worker_info()
+    if worker is not None:
+        dataset = worker.dataset
+        while isinstance(dataset, torch.utils.data.Subset):
+            dataset = dataset.dataset
+        transformation = getattr(dataset, "transformation", None)
+        if transformation is not None:
+            transformation.set_random_seed(worker_seed)
 
 ###
 from torchvision import transforms
@@ -132,7 +149,13 @@ def augment(input_data, transformation):
     # input_data["disp"] = np.ascontiguousarray(input_data["disp"], dtype=np.float32)
 
     # return normalized image
-    return normalization(**input_data)
+    result = normalization(**input_data)
+    # Compose 1.3.1 made ALL numpy outputs contiguous; 2.x only handles
+    # registered targets. PFM disparity arrays may have negative strides.
+    return {
+        key: np.ascontiguousarray(value) if isinstance(value, np.ndarray) else value
+        for key, value in result.items()
+    }
 
     ###
     # input_data["left"] = transform_data(input_data["left"])

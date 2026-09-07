@@ -60,8 +60,8 @@ class KITTIBaseDataset(data.Dataset):
     def _augmentation(self):
         if self.split == 'train':
             self.transformation = Compose([
-                RGBShiftStereo(always_apply=True, p_asym=0.5),
-                RandomBrightnessContrastStereo(always_apply=True, p_asym=0.5)
+                RGBShiftStereo(p=1.0, p_asym=0.5),
+                RandomBrightnessContrastStereo(p=1.0, p_asym=0.5)
             ])
         elif self.split == 'validation' or self.split == 'test' or self.split == 'validation_all':
             self.transformation = None

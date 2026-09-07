@@ -105,6 +105,7 @@ class SceneFlowFlyingThingsDataset(data.Dataset):
         self.h_crop = config.img_height
         self.w_crop = config.img_width
         self.c_disp_shift = config.c_disp_shift
+        self.augmentation_seed = config.seed
         ####
 
         self._read_data()
@@ -154,18 +155,19 @@ class SceneFlowFlyingThingsDataset(data.Dataset):
         if self.split == "train":
             self.transformation = Compose(
                 [
-                    RandomShiftRotate(always_apply=True),
-                    RGBShiftStereo(always_apply=True, p_asym=0.3),
+                    RandomShiftRotate(p=1.0),
+                    RGBShiftStereo(p=1.0, p_asym=0.3),
                     OneOf(
                         [
-                            GaussNoiseStereo(always_apply=True, p_asym=1.0),
+                            GaussNoiseStereo(p=1.0, p_asym=1.0),
                             RandomBrightnessContrastStereo(
-                                always_apply=True, p_asym=0.5
+                                p=1.0, p_asym=0.5
                             ),
                         ],
                         p=1.0,
                     ),
-                ]
+                ],
+                seed=self.augmentation_seed,
             )
         else:
             self.transformation = None
@@ -254,6 +256,7 @@ class SceneFlowMonkaaDataset(data.Dataset):
         self.h_crop = config.img_height
         self.w_crop = config.img_width
         self.c_disp_shift = config.c_disp_shift
+        self.augmentation_seed = config.seed
         ####
 
         self._read_data()
@@ -284,18 +287,19 @@ class SceneFlowMonkaaDataset(data.Dataset):
         if self.split == "train":
             self.transformation = Compose(
                 [
-                    RandomShiftRotate(always_apply=True),
-                    RGBShiftStereo(always_apply=True, p_asym=0.3),
+                    RandomShiftRotate(p=1.0),
+                    RGBShiftStereo(p=1.0, p_asym=0.3),
                     OneOf(
                         [
-                            GaussNoiseStereo(always_apply=True, p_asym=1.0),
+                            GaussNoiseStereo(p=1.0, p_asym=1.0),
                             RandomBrightnessContrastStereo(
-                                always_apply=True, p_asym=0.5
+                                p=1.0, p_asym=0.5
                             ),
                         ],
                         p=1.0,
                     ),
-                ]
+                ],
+                seed=self.augmentation_seed,
             )
         else:
             self.transformation = None
