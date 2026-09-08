@@ -4,6 +4,7 @@
 
 # %%
 import os
+import random
 
 import numpy as np
 import torch.utils.data as data
@@ -178,72 +179,7 @@ class SceneFlowFlyingThingsDataset(data.Dataset):
         return len(self.left_data)
 
     def __getitem__(self, idx):
-        result = {}
-
-        left_fname = self.left_data[idx]
-        result["left"] = np.array(Image.open(left_fname)).astype(np.uint8)[
-            ..., :3
-        ]  # [540, 960, 3]
-
-        right_fname = left_fname.replace("left", "right")
-        result["right"] = np.array(Image.open(right_fname)).astype(np.uint8)[
-            ..., :3
-        ]  # [540, 960, 3]
-
-        # occ_right_fname = self.occ_data[idx].replace("left", "right")
-        # occ_left = np.array(Image.open(self.occ_data[idx])).astype(bool)  # [540, 960]
-        # occ_right = np.array(Image.open(occ_right_fname)).astype(bool)  # [540, 960]
-
-        disp_left_fname = left_fname.replace("frames_cleanpass", "disparity").replace(
-            ".png", ".pfm"
-        )
-        disp_right_fname = right_fname.replace("frames_cleanpass", "disparity").replace(
-            ".png", ".pfm"
-        )
-        disp_left, _ = readPFM(disp_left_fname)  # [540, 960]
-        disp_right, _ = readPFM(disp_right_fname)  # [540, 960]
-
-        # if self.split == "train":
-        #     # horizontal flip
-        #     (
-        #         result["left"],
-        #         result["right"],
-        #         result["occ_mask"],
-        #         result["occ_mask_right"],
-        #         disp,
-        #         disp_right,
-        #     ) = horizontal_flip(
-        #         result["left"],
-        #         result["right"],
-        #         occ_left,
-        #         occ_right,
-        #         disp_left,
-        #         disp_right,
-        #         self.split,
-        #     )
-        #     result["disp"] = np.nan_to_num(disp, nan=0.0)
-        #     result["disp_right"] = np.nan_to_num(disp_right, nan=0.0)
-
-        #     # random crop
-        #     result = random_crop(self.h_crop, self.w_crop, result, self.split)
-        # else:
-        #     result["occ_mask"] = occ_left
-        #     result["occ_mask_right"] = occ_right
-        #     result["disp"] = disp_left
-        #     result["disp_right"] = disp_right
-
-        result["disp"] = disp_left
-        result["disp_right"] = disp_right
-
-        ### random crop
-        result = random_crop(
-            self.h_crop, self.w_crop, result, self.c_disp_shift, self.split
-        )
-        ###
-
-        result = augment(result, self.transformation)
-
-        return result
+        return _load_stereo_sample(self, idx)
 
 
 class SceneFlowMonkaaDataset(data.Dataset):
@@ -310,32 +246,23 @@ class SceneFlowMonkaaDataset(data.Dataset):
         return len(self.left_data)
 
     def __getitem__(self, idx):
-        result = {}
+        return _load_stereo_sample(self, idx)
 
-        left_fname = self.left_data[idx]
-        result["left"] = np.array(Image.open(left_fname)).astype(np.uint8)[..., :3]
 
-        right_fname = left_fname.replace("left", "right")
-        result["right"] = np.array(Image.open(right_fname)).astype(np.uint8)[..., :3]
-
-        disp_left_fname = left_fname.replace("frames_cleanpass", "disparity").replace(
-            ".png", ".pfm"
-        )
-        disp_right_fname = right_fname.replace("frames_cleanpass", "disparity").replace(
-            ".png", ".pfm"
-        )
-        disp_left, _ = readPFM(disp_left_fname)
-        disp_right, _ = readPFM(disp_right_fname)
-
-        result["disp"] = disp_left
-        result["disp_right"] = disp_right
-
-        ### random crop
-        result = random_crop(
-            self.h_crop, self.w_crop, result, self.c_disp_shift, self.split
-        )
-        ###
-
-        result = augment(result, self.transformation)
-
-        return result
+def _load_stereo_sample(dataset, idx):
+    left_path = dataset.left_data[idx]
+    right_path = left_path.replace("left", "right")
+    with Image.open(left_path) as image:
+        left = np.asarray(image.convert("RGB"))
+    with Image.open(right_path) as image:
+        right = np.asarray(image.convert("RGB"))
+    reference = 1 if random.random() <= 0.5 else -1
+    path = left_path if reference == 1 else right_path
+    path = path.replace("frames_cleanpass", "disparity").replace(".png", ".pfm")
+    disparity, _ = readPFM(path)
+    result = {"left": left, "right": right,
+              "disp" if reference == 1 else "disp_right": disparity}
+    result = random_crop(dataset.h_crop, dataset.w_crop, result,
+                         dataset.c_disp_shift, dataset.split, reference=reference)
+    result.pop("disp_right", None)
+    return augment(result, dataset.transformation)

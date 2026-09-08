@@ -158,7 +158,7 @@ class StereoDecoder(nn.Module):
         cost_volume = self.build_cost_volume(feat_left, feat_right)
 
         # conv3d-convT3d
-        out = self.layer4(self.layer3(cost_volume)).squeeze()
+        out = self.layer4(self.layer3(cost_volume)).squeeze(1)
 
         # Apply softmax to get probability volume
         logits = F.softmax(-out, dim=1)  # [b, 2*D, h, w]

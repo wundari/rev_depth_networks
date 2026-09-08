@@ -84,133 +84,44 @@ def horizontal_flip(
     return img_left, img_right, occ, occ_right, disp, disp_right
 
 
-def random_crop(min_crop_height, min_crop_width, input_data, c_disp_shift, split):
+def random_crop(min_crop_height, min_crop_width, input_data, c_disp_shift, split,
+                reference=None):
+    """Uniform valid stereo crop, with the original signed disparity convention.
+
+    ``reference`` optionally selects the eye before loading its PFM file.
+    Validation retains the original stochastic crop/reference policy.
     """
-    Crop center part of the input with a random width and height.
-
-    :param min_crop_height: min height of the crop, int
-    :param min_crop_width: min width of the crop, int
-    :param input_data: input data, dictionary
-    :param split: train/validation split, string
-    :return: updated input data, dictionary
-    """
-
-    # if split != "train":
-    #     return input_data
-
     h, w = input_data["left"].shape[:2]
-
-    # if min_crop_height >= h or min_crop_width > w:
-    #     x1 = 0
-    #     x2 = w - 1
-    #     y1 = 0
-    #     y2 = h - 1
-    # else:
-    crop_height = min_crop_height  # 360  # random.randint(min_crop_height, height)
-    crop_width = min_crop_width  # 640  # random.randint(min_crop_width, width)
-    x1, y1, x2, y2 = get_random_crop_coords(h, w, crop_height, crop_width)
-
-    ###
-    # c_disp_shift = 2
-    p_left_or_right = random.random()  # random.random()  # use disp_left or disp_right
-    p_left_or_right_thresh = 0.5
-    # p_flip = random.random()  # flip left2right
-    # p_flip_thresh = -1.0
-
-    if (
-        p_left_or_right <= p_left_or_right_thresh
-    ):  # use disp_left, the target is img_right
-        # pos disp: shift img_left to the right to get its corresponding pixels in img_right
-        # neg disp: shift img_left to the left to get its corresponding pixels in img_right
-
-        # calculate pixels for shifting disparity map and left image
-        img_disp = input_data["disp"]
-        img_disp_shifted, shift = shift_disparity_map(img_disp, c_disp_shift)
-
-        # use disp_left: shift disparity (img_right to left)
-        # to compensate shifted disp_img, shift patch_window for img_right to the left
-        x1_shifted = x1 - int(shift)
-        x2_shifted = x2 - int(shift)
-
-        while x1_shifted < 0:
-
-            x1, y1, x2, y2 = get_random_crop_coords(h, w, crop_height, crop_width)
-
-            # use disp_left: shift disparity (img_right to left)
-            x1_shifted = x1 - int(shift)
-            x2_shifted = x2 - int(shift)
-
-        # if p_flip <= p_flip_thresh:  # flip left2right
-        #     img_left = input_data["left"]
-        #     img_right = input_data["right"]
-        #     input_data["left"] = crop(img_right, x1_shifted, y1, x2_shifted, y2)
-        #     input_data["right"] = crop(img_left, x1, y1, x2, y2)
-        # else:  # no flip left2right
-        #     input_data["left"] = crop(input_data["left"], x1, y1, x2, y2)
-        #     input_data["right"] = crop(
-        #         input_data["right"], x1_shifted, y1, x2_shifted, y2
-        #     )
-
-        input_data["left"] = crop(input_data["left"], x1, y1, x2, y2)
-        input_data["right"] = crop(input_data["right"], x1_shifted, y1, x2_shifted, y2)
-        input_data["disp"] = crop(img_disp_shifted, x1, y1, x2, y2)
-        input_data["ref"] = 1  # 1 => use disp_left as ground truth
-        ##
-
-    else:  # use disp_right, the target is img_left
-        # pos disp: shift img_right to the left to get its corresponding pixels in img_left
-        # neg disp: shift img_right to the right to get its corresponding pixels in img_left
-
-        # calculate pixels for shifting disparity map and left image
-        img_disp = input_data["disp_right"]
-        img_disp_shifted, shift = shift_disparity_map(img_disp, c_disp_shift)
-
-        # use disp_right: shift disparity (img_left to left)
-        # to compensate shifted disp_img, shift patch_window for img_left to the right
-        x1_shifted = x1 + int(shift)
-        x2_shifted = x2 + int(shift)
-        while x2_shifted > w:
-
-            x1, y1, x2, y2 = get_random_crop_coords(h, w, crop_height, crop_width)
-
-            # use disp_right: shift disparity (img_left to left)
-            x1_shifted = x1 + int(shift)
-            x2_shifted = x2 + int(shift)
-
-        # if p_flip >= 0.5:  # flip left2right
-        #     img_left = input_data["left"]
-        #     img_right = input_data["right"]
-        #     input_data["left"] = crop(img_right, x1, y1, x2, y2)
-        #     input_data["right"] = crop(img_left, x1_shifted, y1, x2_shifted, y2)
-        # else:
-        #     input_data["left"] = crop(
-        #         input_data["left"], x1_shifted, y1, x2_shifted, y2
-        #     )
-        #     input_data["right"] = crop(input_data["right"], x1, y1, x2, y2)
-
-        img_left = input_data["left"]
-        img_right = input_data["right"]
-        input_data["left"] = crop(img_right, x1, y1, x2, y2)
-        input_data["right"] = crop(img_left, x1_shifted, y1, x2_shifted, y2)
-        input_data["disp"] = crop(img_disp_shifted, x1, y1, x2, y2)
-        input_data["ref"] = -1  # 1 => use disp_right as ground truth
-        ##
-
-    ###
-
-    # input_data["left"] = crop(input_data["left"], x1, y1, x2, y2)
-    # input_data["right"] = crop(input_data["right"], x1, y1, x2, y2)
-    # input_data["disp"] = crop(input_data["disp"], x1, y1, x2, y2)
-
-    # input_data["occ_mask"] = crop(input_data["occ_mask"], x1, y1, x2, y2)
-    # try:
-    #     input_data["disp_right"] = crop(input_data["disp_right"], x1, y1, x2, y2)
-    #     # input_data["occ_mask_right"] = crop(
-    #     #     input_data["occ_mask_right"], x1, y1, x2, y2
-    #     # )
-    # except KeyError:
-    #     pass
-
+    ch, cw = min_crop_height, min_crop_width
+    if input_data["right"].shape[:2] != (h, w):
+        raise ValueError("Stereo images must have matching spatial shapes")
+    if ch <= 0 or cw <= 0 or ch > h or cw > w:
+        raise ValueError("Crop must be positive and fit inside the source image")
+    if reference is None:
+        reference = 1 if random.random() <= 0.5 else -1
+    if reference not in (1, -1):
+        raise ValueError("reference must be 1 or -1")
+    shift = c_disp_shift * 44.0
+    if not np.isfinite(shift):
+        raise ValueError("Disparity shift must be finite")
+    offset = int(shift)
+    delta = reference * offset
+    low, high = max(0, delta), min(w - cw, w - cw + delta)
+    if low > high:
+        raise ValueError("No valid stereo crop for this width and disparity shift")
+    x = random.randint(low, high)
+    y = random.randint(0, h - ch)
+    source = input_data["disp"] if reference == 1 else input_data["disp_right"]
+    if source.shape != (h, w):
+        raise ValueError("Selected disparity map must match the source image")
+    left, right = input_data["left"], input_data["right"]
+    anchor, other = (left, right) if reference == 1 else (right, left)
+    input_data["left"] = crop(anchor, x, y, x + cw, y + ch)
+    input_data["right"] = crop(other, x - delta, y, x - delta + cw, y + ch)
+    # Keep the original full-image width as the clipping bound.
+    shifted = crop(source, x, y, x + cw, y + ch) - shift
+    input_data["disp"] = np.minimum(shifted, w)
+    input_data["ref"] = reference
     return input_data
 
 
@@ -380,7 +291,7 @@ class ToTensor(StereoTransform):
         super(ToTensor, self).__init__(always_apply, p)
 
     def apply(self, image, **params):
-        return torch.tensor(image.transpose(2, 0, 1))
+        return torch.from_numpy(np.ascontiguousarray(image.transpose(2, 0, 1)))
 
 
 class ToGrayStereo(StereoTransform):

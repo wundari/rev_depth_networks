@@ -17,32 +17,13 @@ import math
 
 from dataset.scene_flow import SceneFlowFlyingThingsDataset
 from dataset.scene_flow import SceneFlowMonkaaDataset
+from dataset.loading import make_loader, make_train_eval_loader, batches_for_evaluation
 from modules.bnn import build_bnn
 from utilities.misc import NestedTensor
 import json
 
 # reproducibility
 import random
-from config.config import BNNconfig
-
-cfg = BNNconfig()
-seed_number = cfg.seed
-torch.manual_seed(seed_number)
-torch.cuda.manual_seed(seed_number)
-random.seed(seed_number)
-np.random.seed(seed_number)
-os.environ["PYTHONHASHSEED"] = str(seed_number)
-
-
-# initialize random seed number for dataloader
-def seed_worker(worker_id):
-    worker_seed = seed_number  # torch.initial_seed()  % 2**32
-    np.random.seed(worker_seed)
-    random.seed(worker_seed)
-
-
-g = torch.Generator()
-g.manual_seed(seed_number)
 
 # settings for pytorch 2.0 compile
 torch.backends.cuda.matmul.allow_tf32 = True  # allow tf32 on matmul
@@ -57,6 +38,9 @@ class Engine:
     def __init__(self, config) -> None:
 
         self.config = config
+        random.seed(config.seed)
+        np.random.seed(config.seed)
+        torch.manual_seed(config.seed)
         self.device = config.device
         self.h = config.img_height
         self.w = config.img_width
@@ -133,13 +117,13 @@ class Engine:
         # self.model.train()  # training mode
         print(
             f"BNN was successfully loaded to {self.device}, "
-            + f"binocular interaction: {config.binocular_interaction}\n"
-            + f"compile mode: {config.compile_mode}\n"
-            + f"experiment dir: {self.experiment_dir}\n"
-        )
-        print(
-            f"BNN will be trained on {config.dataset} dataset "
-            + f"with batch size {config.batch_size} for {config.epochs} epochs"
+            + f"Binocular interaction: {config.binocular_interaction}\n"
+            + f"Seed: {config.seed}\n"
+            + f"Compile mode: {config.compile_mode}\n"
+            + f"Experiment dir: {self.experiment_dir}\n"
+            + f"Dataset: {config.dataset}\n"
+            + f"Batch size: {config.batch_size}\n"
+            + f"# epochs: {config.epochs} epochs"
         )
 
     def save_config(self):
@@ -169,33 +153,11 @@ class Engine:
             )
             dataset_test = SceneFlowMonkaaDataset(self.datadir, self.config, "test")
 
-        data_loader_train = data.DataLoader(
-            dataset_train,
-            batch_size=self.config.batch_size,
-            shuffle=True,
-            pin_memory=True,
-            worker_init_fn=seed_worker,
-            generator=g,
+        return (
+            make_loader(dataset_train, self.config, training=True),
+            make_loader(dataset_validation, self.config, seed_offset=1),
+            make_loader(dataset_test, self.config, seed_offset=2),
         )
-
-        data_loader_validation = data.DataLoader(
-            dataset_validation,
-            batch_size=self.config.batch_size_val,
-            shuffle=True,
-            pin_memory=True,
-            worker_init_fn=seed_worker,
-            generator=g,
-        )
-        data_loader_test = data.DataLoader(
-            dataset_test,
-            batch_size=self.config.batch_size_val,
-            shuffle=True,
-            pin_memory=True,
-            worker_init_fn=seed_worker,
-            generator=g,
-        )
-
-        return (data_loader_train, data_loader_validation, data_loader_test)
 
     def check_input(self, data_loader):
         # check input
@@ -355,7 +317,7 @@ class Engine:
 
         # create adamw optimizer and use the fused version if it is available
         fused_available = "fused" in inspect.signature(torch.optim.AdamW).parameters
-        use_fused = fused_available and torch.cuda.is_available()
+        use_fused = fused_available and torch.device(self.device).type == "cuda"
         print(f"using fused AdamW: {use_fused}")
         optimizer = torch.optim.AdamW(
             optim_groups, lr=learning_rate, betas=(0.9, 0.95), eps=1e-8, fused=use_fused
@@ -383,287 +345,36 @@ class Engine:
         return self.config.min_lr + coeff * (self.config.max_lr - self.config.min_lr)
 
     def train(self, train_loader, val_loader):
+        """Compatibility entry point for the maintained training loop."""
+        return self.train_v2(train_loader, val_loader)
 
-        # build loss criterion
-        criterion = nn.SmoothL1Loss()
-        # criterion = nn.L1Loss()
+    def _to_device(self, batch):
+        return NestedTensor(
+            **{
+                key: batch[key].to(self.device, non_blocking=True)
+                for key in ("left", "right", "disp", "ref")
+            }
+        )
 
-        # configure optimizer
-        optimizer = self.configure_optimizers(self.config.weight_decay, self.config.lr)
-        # optimizer = optim.AdamW(self.model.parameters(), lr=self.config.lr)
-
-        # scheduler
-        # scheduler = optim.lr_scheduler.MultiStepLR(
-        #     optimizer, milestones=np.arange(1, self.config.epochs), gamma=0.2
-        # )
-
-        scaler = torch.cuda.amp.GradScaler()
-        if self.config.epochs > 10:
-            max_steps_lr = 10 * len(train_loader)
-        else:
-            max_steps_lr = self.config.epochs * len(train_loader)
-        max_steps = self.config.epochs * len(train_loader)
-        max_norm = 1.0
-        losses_train = []
-        accs_train = []  # 3-pix accuracy for training
-        losses_val = []
-        accs_val = []  # 3-pix accuracy for val
-        loss_val_prev = np.inf
-
-        for epoch in range(self.config.start_epoch, self.config.epochs):
-            tepoch = tqdm(train_loader)
-
-            # for i in range(iter_num, len(train_loader)):
-            for idx, inputs in enumerate(tepoch):
-                step = epoch * len(train_loader) + idx
-
-                # once in a while evaluate validation loss
-                if step % self.config.eval_interval == 0:
-                    self.model.eval()
-
-                    with torch.no_grad():
-                        loss_val_accu = 0  # val loss accumulate
-                        acc_val_accu = 0  # 3-pix accuracy accumulate
-                        for j in range(self.config.eval_iter):
-
-                            inputs = next(iter(val_loader))
-
-                            # build NestedTensor
-                            inputs = NestedTensor(
-                                inputs["left"]
-                                .pin_memory()
-                                .to(self.device, non_blocking=True),
-                                inputs["right"]
-                                .pin_memory()
-                                .to(self.device, non_blocking=True),
-                                disp=inputs["disp"]
-                                .pin_memory()
-                                .to(self.device, non_blocking=True),
-                                ref=inputs["ref"]
-                                .pin_memory()
-                                .to(self.device, non_blocking=True),
-                            )
-
-                            with torch.autocast(
-                                device_type=self.device, dtype=torch.bfloat16
-                            ):
-                                disp_pred = self.model(inputs)
-
-                                # compute loss
-                                loss_val = criterion(inputs.disp, disp_pred)
-
-                                # accumulate val loss
-                                loss_val_accu += loss_val
-
-                                # compute accuracy (3 pixel error for val dataset)
-                                diff = torch.abs(disp_pred - inputs.disp)
-                                acc_val_accu += torch.sum(diff < 3)
-
-                        # print(f'val loss: {loss_val["aggregated"].item():.4f}')
-                        # gather validation loss
-                        loss_val_mean = loss_val_accu / self.config.eval_iter
-                        losses_val.append(loss_val_mean.item())
-
-                        # gather 3-pix accuracy val
-                        acc_val_mean = acc_val_accu / float(
-                            self.h
-                            * self.w
-                            * self.config.batch_size_val
-                            * self.config.eval_iter
-                        )
-                        accs_val.append(acc_val_mean.item())
-
-                        # save best model where loss_val[i] < loss_val[i - 1]
-                        if loss_val_mean < loss_val_prev:
-                            print(
-                                "found best model, "
-                                + f"loss_val_curr: {loss_val_mean.item():.4f} "
-                                + f"loss_val_prev: {loss_val_prev:.4f}, saving"
-                            )
-                            self.save_checkpoint(epoch, optimizer, best=True)
-                            loss_val_prev = loss_val_mean.item()
-
-                        ## once a while check predicted disparity on the val loader
-                        left = inputs.left.to("cpu")
-                        right = inputs.right.to("cpu")
-                        disp = inputs.disp.to("cpu")
-                        disp_pred = disp_pred.data.cpu().numpy()
-                        # normalize to (0, 255), for visualization
-                        img_left = ((left / left.max()) * 128 + 127).to(torch.uint8)
-                        img_right = ((right / right.max()) * 128 + 127).to(torch.uint8)
-
-                        # visualize
-                        figsize = (16, 10)
-                        vmin = -100
-                        vmax = 100
-                        sns.set_theme()
-                        sns.set_theme(
-                            context="paper", style="white", font_scale=2, palette="deep"
-                        )
-
-                        fig, axes = plt.subplots(
-                            nrows=self.config.batch_size_val, ncols=4, figsize=figsize
-                        )
-                        if self.config.batch_size_val == 1:
-                            # left image
-                            axes[0].imshow(img_left[0].permute(1, 2, 0))
-                            axes[0].set_title("Left")
-
-                            # right image
-                            axes[1].imshow(img_right[0].permute(1, 2, 0))
-                            axes[1].set_title("Right")
-
-                            # predicted disparity
-                            axes[2].imshow(
-                                disp_pred[0],
-                                cmap="jet",
-                                vmin=vmin,
-                                vmax=vmax,
-                            )
-                            axes[2].set_title("Pred. disparity")
-
-                            # disparity ground truth
-                            temp = axes[3].imshow(
-                                disp[0], cmap="jet", vmin=vmin, vmax=vmax
-                            )
-                            axes[3].set_title("Ground truth")
-
-                            # colorbar
-                            l_ax, b_ax, w_ax, h_ax = axes[3].get_position().bounds
-                            cax = plt.gcf().add_axes(
-                                [l_ax + w_ax + 0.03, b_ax, 0.03, h_ax]
-                            )
-                            cbar_ticks = np.arange(vmin, vmax + 1, 50)
-                            cbar = fig.colorbar(temp, cax=cax, ticks=cbar_ticks)
-                            cbar.ax.set_yticklabels(cbar_ticks)
-                        else:
-                            for k in range(self.config.batch_size_val):
-                                # left image
-                                axes[k, 0].imshow(img_left[k].permute(1, 2, 0))
-                                axes[k, 0].set_title("Left")
-
-                                # right image
-                                axes[k, 1].imshow(img_right[k].permute(1, 2, 0))
-                                axes[k, 1].set_title("Right")
-
-                                # predicted disparity
-                                axes[k, 2].imshow(
-                                    disp_pred[k],
-                                    cmap="jet",
-                                    vmin=vmin,
-                                    vmax=vmax,
-                                )
-                                axes[k, 2].set_title("Pred. disparity")
-
-                                # disparity ground truth
-                                temp = axes[k, 3].imshow(
-                                    disp[k], cmap="jet", vmin=vmin, vmax=vmax
-                                )
-                                axes[k, 3].set_title("Ground truth")
-
-                                # colorbar
-                                l_ax, b_ax, w_ax, h_ax = (
-                                    axes[k, 3].get_position().bounds
-                                )
-                                cax = plt.gcf().add_axes(
-                                    [l_ax + w_ax + 0.03, b_ax, 0.03, h_ax]
-                                )
-                                cbar_ticks = np.arange(vmin, vmax + 1, 50)
-                                cbar = fig.colorbar(temp, cax=cax, ticks=cbar_ticks)
-                                cbar.ax.set_yticklabels(cbar_ticks)
-
-                        # turn off axis for all subplots
-                        for ax in axes.ravel():
-                            ax.set_axis_off()
-
-                        plt.savefig(
-                            f"{self.pred_images_dir}/output_val.pdf",
-                            dpi=600,
-                            bbox_inches="tight",
-                        )
-                        plt.close()
-
-                # training loop
-                self.model.train()
-                optimizer.zero_grad()
-
-                inputs = next(iter(train_loader))
-                # print(inputs["left"].size())
-
-                # build nested tensor
-                inputs = NestedTensor(
-                    inputs["left"].pin_memory().to(self.device, non_blocking=True),
-                    inputs["right"].pin_memory().to(self.device, non_blocking=True),
-                    disp=inputs["disp"].pin_memory().to(self.device, non_blocking=True),
-                    ref=inputs["ref"].pin_memory().to(self.device, non_blocking=True),
-                )
-
-                # forward pass
-                with torch.autocast(device_type=self.device, dtype=torch.bfloat16):
-                    disp_pred = self.model(inputs)
-
-                    # compute loss
-                    loss_train = criterion(inputs.disp, disp_pred)
-
-                    # compute 3-pix acc
-                    diff = torch.abs(disp_pred - inputs.disp)
-                    acc_train = (diff < 3).float().mean()
-
-                # gather training L1 loss each iteration
-                losses_train.append(loss_train.item())
-
-                # gather 3-pix accuracies
-                accs_train.append(acc_train.item())
-
-                # terminate training if exploded
-                if not math.isfinite(loss_train.item()):
-                    print(f"Loss is {loss_train.item()}, stopping training")
-                    sys.exit(1)
-
-                # backprop
-                scaler.scale(loss_train).backward()
-
-                # clip norm
-                # if max_norm > 0:
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm)
-
-                # update learning rate
-                lr = self.get_lr(step, max_steps_lr)
-                for param_group in optimizer.param_groups:
-                    param_group["lr"] = lr
-
-                # step optimizer
-                scaler.step(optimizer)
-
-                # Updates the scale for next iteration.
-                scaler.update()
-
-                # sync cuda
-                torch.cuda.synchronize()
-
-                tepoch.set_description(
-                    f"step {step}/{max_steps} |"
-                    + f"train loss: {loss_train.item():.4f} |"
-                    + f"train 3-pix acc: {acc_train.item():.4f} |"
-                    + f"val loss: {loss_val_mean:.4f} |"
-                    + f"val 3-pix acc: {acc_val_mean.item():.4f} |"
-                    + f"lr: {optimizer.param_groups[0]['lr']:.4e}"
-                )
-
-                # clear cache
-                torch.cuda.empty_cache()
-
-            # update lr
-            # scheduler.step()
-
-            # save model each epoch
-            self.save_checkpoint(epoch, optimizer)
-
-        # save train and val losses
-        np.save(f"{self.experiment_dir}/losses_train.npy", losses_train)
-        np.save(f"{self.experiment_dir}/losses_val.npy", losses_val)
-        np.save(f"{self.experiment_dir}/accs_train.npy", accs_train)
-        np.save(f"{self.experiment_dir}/accs_val.npy", accs_val)
+    def _evaluate_batches(self, loader, criterion):
+        total_loss = torch.zeros((), device=self.device)
+        correct = torch.zeros((), device=self.device)
+        pixels = 0
+        with torch.no_grad():
+            for batch in batches_for_evaluation(loader, self.config.eval_iter):
+                inputs = self._to_device(batch)
+                with torch.autocast(
+                    device_type=torch.device(self.device).type,
+                    dtype=torch.bfloat16,
+                    enabled=torch.device(self.device).type == "cuda",
+                ):
+                    prediction = self.model(inputs)
+                    loss = criterion(inputs.disp, prediction)
+                count = inputs.disp.numel()
+                total_loss += loss * count
+                correct += ((prediction - inputs.disp).abs() < 3).sum()
+                pixels += count
+        return total_loss / pixels, correct / pixels, inputs, prediction
 
     def train_v2(self, train_loader, val_loader):
 
@@ -680,7 +391,14 @@ class Engine:
         #     optimizer, milestones=np.arange(1, self.config.epochs), gamma=0.2
         # )
 
-        scaler = torch.cuda.amp.GradScaler()
+        if self.config.log_interval <= 0 or self.config.eval_interval <= 0:
+            raise ValueError("Logging and evaluation intervals must be positive")
+        if len(train_loader) == 0:
+            raise ValueError("Training loader is empty")
+        train_eval_loader = make_train_eval_loader(train_loader, self.config)
+        scaler = torch.amp.GradScaler(
+            "cuda", enabled=torch.device(self.device).type == "cuda"
+        )
         if self.config.epochs > 10:
             max_steps_lr = 10 * len(train_loader)
         else:
@@ -701,23 +419,17 @@ class Engine:
             for idx, inputs in enumerate(tepoch):
                 step = epoch * len(train_loader) + idx
 
-                # training loop
-                inputs = next(iter(train_loader))
-                # print(inputs["left"].size())
-
-                # build nested tensor
-                inputs = NestedTensor(
-                    inputs["left"].pin_memory().to(self.device, non_blocking=True),
-                    inputs["right"].pin_memory().to(self.device, non_blocking=True),
-                    disp=inputs["disp"].pin_memory().to(self.device, non_blocking=True),
-                    ref=inputs["ref"].pin_memory().to(self.device, non_blocking=True),
-                )
+                inputs = self._to_device(inputs)
 
                 # zero the gradients
-                optimizer.zero_grad()
+                optimizer.zero_grad(set_to_none=True)
 
                 # forward pass
-                with torch.autocast(device_type=self.device, dtype=torch.bfloat16):
+                with torch.autocast(
+                    device_type=torch.device(self.device).type,
+                    dtype=torch.bfloat16,
+                    enabled=torch.device(self.device).type == "cuda",
+                ):
                     disp_pred = self.model(inputs)
 
                     # compute loss
@@ -728,8 +440,9 @@ class Engine:
                     acc_train = (diff < 3).float().mean()
 
                 # terminate training if exploded
-                if not math.isfinite(loss_train.item()):
-                    print(f"Loss is {loss_train.item()}, stopping training")
+                loss_value = loss_train.item()
+                if not math.isfinite(loss_value):
+                    print(f"Loss is {loss_value}, stopping training")
                     sys.exit(1)
 
                 # backprop
@@ -737,6 +450,7 @@ class Engine:
 
                 # clip norm
                 # if max_norm > 0:
+                scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm)
 
                 # update learning rate
@@ -750,129 +464,26 @@ class Engine:
                 # Updates the scale for next iteration.
                 scaler.update()
 
-                # sync cuda
-                torch.cuda.synchronize()
-
-                tepoch.set_description(
-                    f"step {step}/{max_steps} |"
-                    + f"train loss: {loss_train.item():.4f} |"
-                    + f"train 3-pix acc: {acc_train.item():.4f} |"
-                    + f"lr: {optimizer.param_groups[0]['lr']:.4e}"
-                )
-
-                # clear cache
-                torch.cuda.empty_cache()
-
-                # update lr
-                # scheduler.step()
+                if step % self.config.log_interval == 0:
+                    tepoch.set_description(
+                        f"step {step}/{max_steps} | train loss: {loss_value:.4f} |"
+                        f"train 3-pix acc: {acc_train.item():.4f} | lr: {lr:.4e}"
+                    )
 
                 # once in a while evaluate validation loss
                 if (step >= 0) & (step % self.config.eval_interval == 0):
                     self.model.eval()
 
                     with torch.no_grad():
-                        loss_train_accu = 0  # train loss accumulate
-                        acc_train_accu = 0  # 3-pix acc train accumulate
-                        loss_val_accu = 0  # val loss accumulate
-                        acc_val_accu = 0  # 3-pix acc val accumulate
-                        for j in range(self.config.eval_iter):
-
-                            ################
-                            ## train loss ##
-                            ################
-                            inputs = next(iter(train_loader))
-
-                            # build NestedTensor
-                            inputs = NestedTensor(
-                                inputs["left"]
-                                .pin_memory()
-                                .to(self.device, non_blocking=True),
-                                inputs["right"]
-                                .pin_memory()
-                                .to(self.device, non_blocking=True),
-                                disp=inputs["disp"]
-                                .pin_memory()
-                                .to(self.device, non_blocking=True),
-                                ref=inputs["ref"]
-                                .pin_memory()
-                                .to(self.device, non_blocking=True),
-                            )
-
-                            with torch.autocast(
-                                device_type=self.device, dtype=torch.bfloat16
-                            ):
-                                disp_pred = self.model(inputs)
-
-                                # compute loss
-                                loss_train = criterion(inputs.disp, disp_pred)
-
-                                # accumulate val loss
-                                loss_train_accu += loss_train
-
-                                # compute accuracy (3 pixel error for train dataset)
-                                diff = torch.abs(disp_pred - inputs.disp)
-                                acc_train_accu += torch.sum(diff < 3)
-
-                            #####################
-                            ## validation loss ##
-                            #####################
-                            inputs = next(iter(val_loader))
-
-                            # build NestedTensor
-                            inputs = NestedTensor(
-                                inputs["left"]
-                                .pin_memory()
-                                .to(self.device, non_blocking=True),
-                                inputs["right"]
-                                .pin_memory()
-                                .to(self.device, non_blocking=True),
-                                disp=inputs["disp"]
-                                .pin_memory()
-                                .to(self.device, non_blocking=True),
-                                ref=inputs["ref"]
-                                .pin_memory()
-                                .to(self.device, non_blocking=True),
-                            )
-
-                            with torch.autocast(
-                                device_type=self.device, dtype=torch.bfloat16
-                            ):
-                                disp_pred = self.model(inputs)
-
-                                # compute loss
-                                loss_val = criterion(inputs.disp, disp_pred)
-
-                                # accumulate val loss
-                                loss_val_accu += loss_val
-
-                                # compute accuracy (3 pixel error for val dataset)
-                                diff = torch.abs(disp_pred - inputs.disp)
-                                acc_val_accu += torch.sum(diff < 3)
-
-                        # gather train loss every eval_interval
-                        loss_train_mean = loss_train_accu / self.config.eval_iter
+                        loss_train_mean, acc_train_mean, _, _ = self._evaluate_batches(
+                            train_eval_loader, criterion
+                        )
+                        loss_val_mean, acc_val_mean, inputs, disp_pred = (
+                            self._evaluate_batches(val_loader, criterion)
+                        )
                         losses_train.append(loss_train_mean.item())
-
-                        # gather validation loss every eval_interval
-                        loss_val_mean = loss_val_accu / self.config.eval_iter
                         losses_val.append(loss_val_mean.item())
-
-                        # gather 3-pix accuracy train every eval_interval
-                        acc_train_mean = acc_train_accu / float(
-                            self.h
-                            * self.w
-                            * self.config.batch_size_val
-                            * self.config.eval_iter
-                        )
                         accs_train.append(acc_train_mean.item())
-
-                        # gather 3-pix accuracy val every eval_interval
-                        acc_val_mean = acc_val_accu / float(
-                            self.h
-                            * self.w
-                            * self.config.batch_size_val
-                            * self.config.eval_iter
-                        )
                         accs_val.append(acc_val_mean.item())
 
                         tepoch.set_postfix(
@@ -911,9 +522,9 @@ class Engine:
                         )
 
                         fig, axes = plt.subplots(
-                            nrows=self.config.batch_size_val, ncols=4, figsize=figsize
+                            nrows=left.shape[0], ncols=4, figsize=figsize
                         )
-                        if self.config.batch_size_val == 1:
+                        if left.shape[0] == 1:
                             # left image
                             axes[0].imshow(img_left[0].permute(1, 2, 0))
                             axes[0].set_title("Left")
@@ -946,7 +557,7 @@ class Engine:
                             cbar = fig.colorbar(temp, cax=cax, ticks=cbar_ticks)
                             cbar.ax.set_yticklabels(cbar_ticks)
                         else:
-                            for k in range(self.config.batch_size_val):
+                            for k in range(left.shape[0]):
                                 # left image
                                 axes[k, 0].imshow(img_left[k].permute(1, 2, 0))
                                 axes[k, 0].set_title("Left")

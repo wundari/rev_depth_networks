@@ -26,6 +26,11 @@ class BNNconfig:
     # training params
     batch_size: int = 4
     batch_size_val: int = 4
+    num_workers: int = 2
+    eval_num_workers: int = 2
+    persistent_workers: bool = True
+    prefetch_factor: int = 2
+    log_interval: int = 20
     weight_decay: float = 1e-4
     start_epoch: int = 0
     if dataset == "sceneflow_monkaa":
@@ -37,7 +42,7 @@ class BNNconfig:
     clip_max_norm: float = 0.1  # gradient clipping max norm
     device = "cuda" if torch.cuda.is_available() else "mps"
     compile_mode: str | None = "reduce-overhead"
-    seed: int = 1618
+    seed: int = 11364
 
     # network parameters
     img_height: int = 256  # crop height
@@ -46,7 +51,7 @@ class BNNconfig:
     base_channels: int = 32
     n_resBlocks: int = 8  # the number of residual blocks
     max_disp: int = 192  # disparity range
-    binocular_interaction: str = "default"  # "sum_diff", "bem", "cmm"
+    binocular_interaction: str = "bem"  # "default", "bem", "cmm", "sum_diff"
     interactions: list[str] = field(
         default_factory=lambda: ["default", "bem", "cmm", "sum_diff"]
     )

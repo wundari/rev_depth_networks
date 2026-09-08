@@ -4,6 +4,8 @@
 
 import random
 
+import cv2
+
 import numpy as np
 import torch
 from albumentations import Compose
@@ -32,6 +34,7 @@ normalization = Compose(
 def seed_stereo_worker(worker_id):
     """Seed global crop randomness and Albumentations' per-worker generators."""
     worker_seed = torch.initial_seed() % (2**32)
+    cv2.setNumThreads(1)  # Parallelism is provided by DataLoader workers.
     np.random.seed(worker_seed)
     random.seed(worker_seed)
     worker = torch.utils.data.get_worker_info()
