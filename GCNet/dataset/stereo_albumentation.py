@@ -4,11 +4,9 @@
 
 import random
 
-import albumentations.augmentations.functional as F
 import cv2
 import numpy as np
 import torch
-from albumentations import GaussNoise, RGBShift, RandomBrightnessContrast, ToGray
 from albumentations.core.transforms_interface import BasicTransform
 
 """
@@ -86,135 +84,44 @@ def horizontal_flip(
     return img_left, img_right, occ, occ_right, disp, disp_right
 
 
-def random_crop(min_crop_height, min_crop_width, input_data, c_disp_shift, split):
+def random_crop(min_crop_height, min_crop_width, input_data, c_disp_shift, split,
+                reference=None):
+    """Uniform valid stereo crop, with the original signed disparity convention.
+
+    ``reference`` optionally selects the eye before loading its PFM file.
+    Validation retains the original stochastic crop/reference policy.
     """
-    Crop center part of the input with a random width and height.
-
-    :param min_crop_height: min height of the crop, int
-    :param min_crop_width: min width of the crop, int
-    :param input_data: input data, dictionary
-    :param split: train/validation split, string
-    :return: updated input data, dictionary
-    """
-
-    # if split != "train":
-    #     return input_data
-
     h, w = input_data["left"].shape[:2]
-
-    # if min_crop_height >= h or min_crop_width > w:
-    #     x1 = 0
-    #     x2 = w - 1
-    #     y1 = 0
-    #     y2 = h - 1
-    # else:
-    crop_height = min_crop_height  # 360  # random.randint(min_crop_height, height)
-    crop_width = min_crop_width  # 640  # random.randint(min_crop_width, width)
-    x1, y1, x2, y2 = get_random_crop_coords(h, w, crop_height, crop_width)
-
-    ###
-    # c_disp_shift = 2
-    p_left_or_right = random.random()  # random.random()  # use disp_left or disp_right
-    p_left_or_right_thresh = 0.5
-    # p_flip = random.random()  # flip left2right
-    # p_flip_thresh = -1.0
-
-    if (
-        p_left_or_right <= p_left_or_right_thresh
-    ):  # use disp_left, the target is img_right
-        # pos disp: shift img_left to the right to get its corresponding pixels in img_right
-        # neg disp: shift img_left to the left to get its corresponding pixels in img_right
-
-        # calculate pixels for shifting disparity map and left image
-        img_disp = input_data["disp"]
-        img_disp_shifted, shift = shift_disparity_map(img_disp, c_disp_shift)
-
-        # use disp_left: shift disparity (img_right to left)
-        # to compensate shifted disp_img, shift patch_window for img_right to the left
-        x1_shifted = x1 - int(shift)
-        x2_shifted = x2 - int(shift)
-
-        while x1_shifted < 0:
-
-            x1, y1, x2, y2 = get_random_crop_coords(h, w, crop_height, crop_width)
-
-            # use disp_left: shift disparity (img_right to left)
-            x1_shifted = x1 - int(shift)
-            x2_shifted = x2 - int(shift)
-
-        # if p_flip <= p_flip_thresh:  # flip left2right
-        #     img_left = input_data["left"]
-        #     img_right = input_data["right"]
-        #     input_data["left"] = crop(img_right, x1_shifted, y1, x2_shifted, y2)
-        #     input_data["right"] = crop(img_left, x1, y1, x2, y2)
-        # else:  # no flip left2right
-        #     input_data["left"] = crop(input_data["left"], x1, y1, x2, y2)
-        #     input_data["right"] = crop(
-        #         input_data["right"], x1_shifted, y1, x2_shifted, y2
-        #     )
-
-        input_data["left"] = crop(input_data["left"], x1, y1, x2, y2)
-        input_data["right"] = crop(input_data["right"], x1_shifted, y1, x2_shifted, y2)
-        input_data["disp"] = crop(img_disp_shifted, x1, y1, x2, y2)
-        input_data["ref"] = 1  # 1 => use disp_left as ground truth
-        ##
-
-    else:
-        # swap left to right
-        # use disp_right, the target is img_left
-        # pos disp: shift img_right to the left to get its corresponding pixels in img_left
-        # neg disp: shift img_right to the right to get its corresponding pixels in img_left
-
-        # calculate pixels for shifting disparity map and left image
-        img_disp = input_data["disp_right"]
-        img_disp_shifted, shift = shift_disparity_map(img_disp, c_disp_shift)
-
-        # use disp_right: shift disparity (shift img_left_in_right to right)
-        # to compensate shifted disp_img, shift patch_window for img_left to the right
-        x1_shifted = x1 + int(shift)
-        x2_shifted = x2 + int(shift)
-        while x2_shifted > w:
-
-            x1, y1, x2, y2 = get_random_crop_coords(h, w, crop_height, crop_width)
-
-            # use disp_right: shift disparity (shift img_left_in_right to right)
-            x1_shifted = x1 + int(shift)
-            x2_shifted = x2 + int(shift)
-
-        # if p_flip >= 0.5:  # flip left2right
-        #     img_left = input_data["left"]
-        #     img_right = input_data["right"]
-        #     input_data["left"] = crop(img_right, x1, y1, x2, y2)
-        #     input_data["right"] = crop(img_left, x1_shifted, y1, x2_shifted, y2)
-        # else:
-        #     input_data["left"] = crop(
-        #         input_data["left"], x1_shifted, y1, x2_shifted, y2
-        #     )
-        #     input_data["right"] = crop(input_data["right"], x1, y1, x2, y2)
-
-        img_left = input_data["left"]
-        img_right = input_data["right"]
-        input_data["left"] = crop(img_right, x1, y1, x2, y2)
-        input_data["right"] = crop(img_left, x1_shifted, y1, x2_shifted, y2)
-        input_data["disp"] = crop(img_disp_shifted, x1, y1, x2, y2)
-        input_data["ref"] = -1  # -1 => use disp_right as ground truth
-        ##
-
-    ###
-
-    # input_data["left"] = crop(input_data["left"], x1, y1, x2, y2)
-    # input_data["right"] = crop(input_data["right"], x1, y1, x2, y2)
-    # input_data["disp"] = crop(input_data["disp"], x1, y1, x2, y2)
-
-    # input_data["occ_mask"] = crop(input_data["occ_mask"], x1, y1, x2, y2)
-    # try:
-    #     input_data["disp_right"] = crop(input_data["disp_right"], x1, y1, x2, y2)
-    #     # input_data["occ_mask_right"] = crop(
-    #     #     input_data["occ_mask_right"], x1, y1, x2, y2
-    #     # )
-    # except KeyError:
-    #     pass
-
+    ch, cw = min_crop_height, min_crop_width
+    if input_data["right"].shape[:2] != (h, w):
+        raise ValueError("Stereo images must have matching spatial shapes")
+    if ch <= 0 or cw <= 0 or ch > h or cw > w:
+        raise ValueError("Crop must be positive and fit inside the source image")
+    if reference is None:
+        reference = 1 if random.random() <= 0.5 else -1
+    if reference not in (1, -1):
+        raise ValueError("reference must be 1 or -1")
+    shift = c_disp_shift * 44.0
+    if not np.isfinite(shift):
+        raise ValueError("Disparity shift must be finite")
+    offset = int(shift)
+    delta = reference * offset
+    low, high = max(0, delta), min(w - cw, w - cw + delta)
+    if low > high:
+        raise ValueError("No valid stereo crop for this width and disparity shift")
+    x = random.randint(low, high)
+    y = random.randint(0, h - ch)
+    source = input_data["disp"] if reference == 1 else input_data["disp_right"]
+    if source.shape != (h, w):
+        raise ValueError("Selected disparity map must match the source image")
+    left, right = input_data["left"], input_data["right"]
+    anchor, other = (left, right) if reference == 1 else (right, left)
+    input_data["left"] = crop(anchor, x, y, x + cw, y + ch)
+    input_data["right"] = crop(other, x - delta, y, x - delta + cw, y + ch)
+    # Keep the original full-image width as the clipping bound.
+    shifted = crop(source, x, y, x + cw, y + ch) - shift
+    input_data["disp"] = np.minimum(shifted, w)
+    input_data["ref"] = reference
     return input_data
 
 
@@ -225,7 +132,7 @@ def shift_disparity_map(img_disp, c_disp_shift):
 
     # shift = int(np.clip(c_disp_shift * np.median(img_disp), 0, 255))
     # shift = np.clip(c_disp_shift * np.mean(img_disp), 0, 255)
-    # shift = np.clip(c_disp_shift * np.median(img_disp), 0, 127.0)
+    # shift = np.clip(c_disp_shift * np.median(img_disp), 0, 255)
 
     # shift: mean of disparity map in monkaa training dataset (43.88 pixels)
     # flying training dataset (44.05 pixels)
@@ -234,7 +141,7 @@ def shift_disparity_map(img_disp, c_disp_shift):
 
     # clip img_disp_shifted
     img_disp_shifted[img_disp_shifted > w] = w
-    # img_disp_shifted = np.clip(img_disp_shifted, -128, 127)  # .astype(np.float32)
+    # img_disp_shifted = np.clip(img_disp - shift, -128, 127)  # .astype(np.float32)
 
     return img_disp_shifted, shift
 
@@ -247,80 +154,87 @@ Base
 
 
 class StereoTransform(BasicTransform):
+    """Albumentations 2.x adapter for BNN's left/right dictionary targets.
+
+    Disparities, occlusion masks and reference signs are passed through.
+    ``always_apply`` is a compatibility alias for existing callers only.
     """
-    Transform applied to image only.
-    """
+
+    def __init__(self, always_apply=False, p=0.5):
+        super().__init__(p=1.0 if always_apply else p)
 
     @property
     def targets(self):
         return {"left": self.apply, "right": self.apply}
 
-    def update_params(self, params, **kwargs):
-        if hasattr(self, "interpolation"):
-            params["interpolation"] = self.interpolation
-        if hasattr(self, "fill_value"):
-            params["fill_value"] = self.fill_value
-        params.update(
-            {"cols": kwargs["left"].shape[1], "rows": kwargs["right"].shape[0]}
-        )
-        return params
+    def update_transform_params(self, params, data):
+        # BasicTransform 2.x otherwise looks for image/images, which BNN
+        # does not supply. Delegate using a temporary shape reference.
+        image = data["left"] if "left" in self.targets else data["right"]
+        return super().update_transform_params(params, {"image": image})
 
 
-class RightOnlyTransform(BasicTransform):
-    """
-    Transform applied to right image only.
-    """
+class RightOnlyTransform(StereoTransform):
+    """Transform only the right image (sensor misalignment augmentation)."""
 
     @property
     def targets(self):
         return {"right": self.apply}
 
-    def update_params(self, params, **kwargs):
-        if hasattr(self, "interpolation"):
-            params["interpolation"] = self.interpolation
-        if hasattr(self, "fill_value"):
-            params["fill_value"] = self.fill_value
-        params.update(
-            {"cols": kwargs["right"].shape[1], "rows": kwargs["right"].shape[0]}
-        )
-        return params
 
-
-class StereoTransformAsym(BasicTransform):
-    """
-    Transform applied not equally to left and right images.
-    """
+class StereoTransformAsym(StereoTransform):
+    """Share sampled parameters unless the asymmetric branch is selected."""
 
     def __init__(self, always_apply=False, p=0.5, p_asym=0.2):
-        super(StereoTransformAsym, self).__init__(always_apply, p)
+        super().__init__(always_apply=always_apply, p=p)
+        if not 0 <= p_asym <= 1:
+            raise ValueError("p_asym must be in [0, 1]")
         self.p_asym = p_asym
 
     @property
     def targets(self):
         return {"left": self.apply_l, "right": self.apply_r}
 
-    def update_params(self, params, **kwargs):
-        if hasattr(self, "interpolation"):
-            params["interpolation"] = self.interpolation
-        if hasattr(self, "fill_value"):
-            params["fill_value"] = self.fill_value
-        params.update(
-            {"cols": kwargs["left"].shape[1], "rows": kwargs["right"].shape[0]}
-        )
-        return params
-
     @property
     def targets_as_params(self):
         return ["left", "right"]
 
     def asym(self):
-        return random.random() < self.p_asym
-        # return False
+        return self.py_random.random() < self.p_asym
 
 
-"""
-Stereo Image only transform
-"""
+def _limit_pair(value, nonnegative=False):
+    pair = (0 if nonnegative else -value, value) if np.isscalar(value) else tuple(value)
+    if len(pair) != 2 or pair[0] > pair[1] or (nonnegative and pair[0] < 0):
+        raise ValueError("Expected an ordered pair of limits")
+    return pair
+
+
+def _clip_like(values, image):
+    if image.dtype == np.uint8:
+        maximum = 255
+    elif image.dtype == np.float32:
+        maximum = 1.0
+    else:
+        raise TypeError("Stereo photometric transforms support uint8 and float32")
+    return np.clip(values, 0, maximum).astype(image.dtype)
+
+
+def _shift_rgb(image, r, g, b):
+    # Preserve the 1.3.1 clipping and uint8 truncation behavior.
+    values = image.astype(np.float32) + np.array([r, g, b], dtype=np.float32)
+    return _clip_like(values, image)
+
+
+def _brightness_contrast(image, alpha, beta, brightness_by_max):
+    # Keep the old mean-based brightness convention, including alpha.
+    if image.dtype == np.uint8:
+        values = np.arange(256, dtype=np.float32) * alpha
+        values += beta * 255 if brightness_by_max else alpha * beta * np.mean(image)
+        return cv2.LUT(image, _clip_like(values, image))
+    values = image.astype(np.float32) * alpha
+    values += beta if brightness_by_max else beta * np.mean(values)
+    return _clip_like(values, image)
 
 
 class Normalize(StereoTransform):
@@ -355,7 +269,9 @@ class Normalize(StereoTransform):
         self.max_pixel_value = max_pixel_value
 
     def apply(self, image, **params):
-        return F.normalize(image, self.mean, self.std, self.max_pixel_value)
+        mean = np.asarray(self.mean, dtype=np.float32) * self.max_pixel_value
+        scale = np.reciprocal(np.asarray(self.std, dtype=np.float32) * self.max_pixel_value)
+        return (image.astype(np.float32) - mean) * scale
 
     def get_transform_init_args_names(self):
         return ("mean", "std", "max_pixel_value")
@@ -375,21 +291,15 @@ class ToTensor(StereoTransform):
         super(ToTensor, self).__init__(always_apply, p)
 
     def apply(self, image, **params):
-        return torch.tensor(image.transpose(2, 0, 1))
+        return torch.from_numpy(np.ascontiguousarray(image.transpose(2, 0, 1)))
 
 
-class ToGrayStereo(StereoTransform, ToGray):
-    def __init__(self, always_apply=False, p=0.5):
-        StereoTransform.__init__(self, always_apply, p)
-        ToGray.__init__(self, always_apply, p)
+class ToGrayStereo(StereoTransform):
+    def apply(self, image, **params):
+        return cv2.cvtColor(cv2.cvtColor(image, cv2.COLOR_RGB2GRAY), cv2.COLOR_GRAY2RGB)
 
 
-"""
-Stereo Image Only Asym Transform
-"""
-
-
-class GaussNoiseStereo(StereoTransformAsym, GaussNoise):
+class GaussNoiseStereo(StereoTransformAsym):
     """Apply gaussian noise to the input image.
 
     Args:
@@ -409,28 +319,29 @@ class GaussNoiseStereo(StereoTransformAsym, GaussNoise):
         self, var_limit=(10.0, 50.0), mean=0, always_apply=False, p=0.5, p_asym=0.2
     ):
         StereoTransformAsym.__init__(self, always_apply, p, p_asym)
-        GaussNoise.__init__(self, var_limit, mean, always_apply, p)
+        self.var_limit = _limit_pair(var_limit, nonnegative=True)
+        self.mean = mean
 
     def apply_l(self, img, gauss_l=None, **params):
-        return F.gauss_noise(img, gauss=gauss_l)
+        return _clip_like(img.astype(np.float32) + gauss_l, img)
 
     def apply_r(self, img, gauss_r=None, **params):
-        return F.gauss_noise(img, gauss=gauss_r)
+        return _clip_like(img.astype(np.float32) + gauss_r, img)
 
-    def get_params_dependent_on_targets(self, params):
+    def get_params_dependent_on_data(self, params, data):
 
-        image = params["left"]
-        var = random.uniform(self.var_limit[0], self.var_limit[1])
+        image = data["left"]
+        var = self.py_random.uniform(self.var_limit[0], self.var_limit[1])
         sigma = var**0.5
-        random_state = np.random.RandomState(random.randint(0, 2**32 - 1))
+        random_state = self.random_generator
 
         gauss_l = random_state.normal(self.mean, sigma, image.shape)
 
         if self.asym():
-            image = params["right"]
-            var = random.uniform(self.var_limit[0], self.var_limit[1])
+            image = data["right"]
+            var = self.py_random.uniform(self.var_limit[0], self.var_limit[1])
             sigma = var**0.5
-            random_state = np.random.RandomState(random.randint(0, 2**32 - 1))
+            random_state = self.random_generator
 
             gauss_r = random_state.normal(self.mean, sigma, image.shape)
         else:
@@ -438,7 +349,7 @@ class GaussNoiseStereo(StereoTransformAsym, GaussNoise):
         return {"gauss_l": gauss_l, "gauss_r": gauss_r}
 
 
-class RGBShiftStereo(StereoTransformAsym, RGBShift):
+class RGBShiftStereo(StereoTransformAsym):
     """Randomly shift values for each channel of the input RGB image.
 
     Args:
@@ -467,25 +378,25 @@ class RGBShiftStereo(StereoTransformAsym, RGBShift):
         p_asym=0.2,
     ):
         StereoTransformAsym.__init__(self, always_apply, p, p_asym)
-        RGBShift.__init__(
-            self, r_shift_limit, g_shift_limit, b_shift_limit, always_apply, p
-        )
+        self.r_shift_limit = _limit_pair(r_shift_limit)
+        self.g_shift_limit = _limit_pair(g_shift_limit)
+        self.b_shift_limit = _limit_pair(b_shift_limit)
 
     def apply_l(self, image, r_shift_l=0, g_shift_l=0, b_shift_l=0, **params):
-        return F.shift_rgb(image, r_shift_l, g_shift_l, b_shift_l)
+        return _shift_rgb(image, r_shift_l, g_shift_l, b_shift_l)
 
     def apply_r(self, image, r_shift_r=0, g_shift_r=0, b_shift_r=0, **params):
-        return F.shift_rgb(image, r_shift_r, g_shift_r, b_shift_r)
+        return _shift_rgb(image, r_shift_r, g_shift_r, b_shift_r)
 
-    def get_params_dependent_on_targets(self, params):
-        r_shift_l = random.uniform(self.r_shift_limit[0], self.r_shift_limit[1])
-        g_shift_l = random.uniform(self.g_shift_limit[0], self.g_shift_limit[1])
-        b_shift_l = random.uniform(self.b_shift_limit[0], self.b_shift_limit[1])
+    def get_params_dependent_on_data(self, params, data):
+        r_shift_l = self.py_random.uniform(self.r_shift_limit[0], self.r_shift_limit[1])
+        g_shift_l = self.py_random.uniform(self.g_shift_limit[0], self.g_shift_limit[1])
+        b_shift_l = self.py_random.uniform(self.b_shift_limit[0], self.b_shift_limit[1])
 
         if self.asym():
-            r_shift_r = random.uniform(self.r_shift_limit[0], self.r_shift_limit[1])
-            g_shift_r = random.uniform(self.g_shift_limit[0], self.g_shift_limit[1])
-            b_shift_r = random.uniform(self.b_shift_limit[0], self.b_shift_limit[1])
+            r_shift_r = self.py_random.uniform(self.r_shift_limit[0], self.r_shift_limit[1])
+            g_shift_r = self.py_random.uniform(self.g_shift_limit[0], self.g_shift_limit[1])
+            b_shift_r = self.py_random.uniform(self.b_shift_limit[0], self.b_shift_limit[1])
         else:
             r_shift_r = r_shift_l
             g_shift_r = g_shift_l
@@ -501,7 +412,7 @@ class RGBShiftStereo(StereoTransformAsym, RGBShift):
         }
 
 
-class RandomBrightnessContrastStereo(StereoTransformAsym, RandomBrightnessContrast):
+class RandomBrightnessContrastStereo(StereoTransformAsym):
     """Randomly change brightness and contrast of the input image.
 
     Args:
@@ -530,31 +441,31 @@ class RandomBrightnessContrastStereo(StereoTransformAsym, RandomBrightnessContra
         p_asym=0.2,
     ):
         StereoTransformAsym.__init__(self, always_apply, p, p_asym)
-        RandomBrightnessContrast.__init__(
-            self, brightness_limit, contrast_limit, brightness_by_max, always_apply, p
-        )
+        self.brightness_limit = _limit_pair(brightness_limit)
+        self.contrast_limit = _limit_pair(contrast_limit)
+        self.brightness_by_max = brightness_by_max
 
     def apply_l(self, img, alpha_l=1.0, beta_l=0.0, **params):
-        return F.brightness_contrast_adjust(
+        return _brightness_contrast(
             img, alpha_l, beta_l, self.brightness_by_max
         )
 
     def apply_r(self, img, alpha_r=1.0, beta_r=0.0, **params):
-        return F.brightness_contrast_adjust(
+        return _brightness_contrast(
             img, alpha_r, beta_r, self.brightness_by_max
         )
 
-    def get_params_dependent_on_targets(self, params):
-        alpha_l = 1.0 + random.uniform(self.contrast_limit[0], self.contrast_limit[1])
-        beta_l = 0.0 + random.uniform(
+    def get_params_dependent_on_data(self, params, data):
+        alpha_l = 1.0 + self.py_random.uniform(self.contrast_limit[0], self.contrast_limit[1])
+        beta_l = 0.0 + self.py_random.uniform(
             self.brightness_limit[0], self.brightness_limit[1]
         )
 
         if self.asym():
-            alpha_r = 1.0 + random.uniform(
+            alpha_r = 1.0 + self.py_random.uniform(
                 self.contrast_limit[0], self.contrast_limit[1]
             )
-            beta_r = 0.0 + random.uniform(
+            beta_r = 0.0 + self.py_random.uniform(
                 self.brightness_limit[0], self.brightness_limit[1]
             )
         else:
@@ -591,11 +502,14 @@ class RandomShiftRotate(RightOnlyTransform):
         self.max_shift = max_shift
         self.max_rotation = max_rotation
 
-    def apply(self, img, **params):
-        h, w, _ = img.shape
-        shift = random.random() * self.max_shift * 2 - self.max_shift
-        rotation = random.random() * self.max_rotation * 2 - self.max_rotation
+    def get_params(self):
+        return {
+            "shift": self.py_random.uniform(-self.max_shift, self.max_shift),
+            "rotation": self.py_random.uniform(-self.max_rotation, self.max_rotation),
+        }
 
+    def apply(self, img, shift=0.0, rotation=0.0, **params):
+        h, w = img.shape[:2]
         matrix = np.float32(
             [
                 [np.cos(np.deg2rad(rotation)), -np.sin(np.deg2rad(rotation)), 0],

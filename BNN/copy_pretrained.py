@@ -87,7 +87,7 @@ epoch_iter_to_load_sum_diff = [
 ]
 
 interactions = ["default", "bem", "cmm", "sum_diff"]
-source_dir = "/home/wundari/BNN/run/sceneflow_monkaa"
+source_dir = "/media/wundari/S990Pro1_4TB/BNN/run/sceneflow_monkaa"
 target_dir = "/home/wundari/rev_depth_networks/BNN/run/sceneflow_monkaa"
 for interaction in interactions:
     if interaction == "default":
@@ -103,9 +103,30 @@ for interaction in interactions:
     for s, seed in enumerate(seed_to_analyse):
         epoch = epoch_iter_to_load[s][0]
         iter = epoch_iter_to_load[s][1]
+
+        ## copy pretrained file to target folder
         pretrained_file = f"{source_dir}/bino_interaction_{interaction}/{seed}/epoch_{epoch}_iter_{iter}_model_best.pth.tar"
         target_folder = f"{target_dir}/bino_interaction_{interaction}/{seed}"
-
+        print(f"Copying {pretrained_file} to {target_folder}")
         shutil.copy(pretrained_file, target_folder)
+
+        ## copy training and validation losses
+        loss_file = (
+            f"{source_dir}/bino_interaction_{interaction}/{seed}/losses_train.npy"
+        )
+        print(f"Copying {loss_file} to {target_folder}")
+        shutil.copy(loss_file, target_folder)
+
+        loss_file = f"{source_dir}/bino_interaction_{interaction}/{seed}/losses_val.npy"
+        print(f"Copying {loss_file} to {target_folder}")
+        shutil.copy(loss_file, target_folder)
+
+        loss_file = f"{source_dir}/bino_interaction_{interaction}/{seed}/accs_train.npy"
+        print(f"Copying {loss_file} to {target_folder}")
+        shutil.copy(loss_file, target_folder)
+
+        loss_file = f"{source_dir}/bino_interaction_{interaction}/{seed}/accs_val.npy"
+        print(f"Copying {loss_file} to {target_folder}")
+        shutil.copy(loss_file, target_folder)
 
 # %%

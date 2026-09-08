@@ -21,7 +21,7 @@ class BNNconfig:
     dataset_directory: str = ""
     validation: str = "validation"
     checkpoint: str = "dev"
-    c_disp_shift: float = 2  # a multiplier for shifting disparity map
+    c_disp_shift: float = 2.0  # a multiplier for shifting disparity map
 
     # training params
     batch_size: int = 4
@@ -41,7 +41,7 @@ class BNNconfig:
     eval_iter: int = 200  # the number of iterations for validation
     clip_max_norm: float = 0.1  # gradient clipping max norm
     device = "cuda" if torch.cuda.is_available() else "mps"
-    compile_mode: str | None = "reduce-overhead"
+    compile_mode: str | None = "reduce-overhead"  # "reduce-overhead", "max-autotune"
     seed: int = 11364
 
     # network parameters

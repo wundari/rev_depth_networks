@@ -21,6 +21,7 @@ from dataset.loading import make_loader, make_train_eval_loader, batches_for_eva
 from modules.bnn import build_bnn
 from utilities.misc import NestedTensor
 import json
+from config.config import BNNconfig
 
 # reproducibility
 import random
@@ -35,7 +36,7 @@ torch.backends.cudnn.deterministic = True
 # %%
 class Engine:
 
-    def __init__(self, config) -> None:
+    def __init__(self, config: BNNconfig) -> None:
 
         self.config = config
         random.seed(config.seed)
@@ -123,7 +124,7 @@ class Engine:
             + f"Experiment dir: {self.experiment_dir}\n"
             + f"Dataset: {config.dataset}\n"
             + f"Batch size: {config.batch_size}\n"
-            + f"# epochs: {config.epochs} epochs"
+            + f"Number of epochs: {config.epochs} epochs"
         )
 
     def save_config(self):

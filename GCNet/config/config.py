@@ -28,8 +28,13 @@ class GCNetconfig:
     c_disp_shift: float = 2.0  # a multiplier for shifting disparity map
 
     # training params
-    batch_size: int = 8
-    batch_size_val: int = 8
+    batch_size: int = 4
+    batch_size_val: int = 4
+    num_workers: int = 2
+    eval_num_workers: int = 2
+    persistent_workers: bool = True
+    prefetch_factor: int = 2
+    log_interval: int = 20
     weight_decay: float = 1e-4
     start_epoch: int = 0
     if dataset == "sceneflow_monkaa":
@@ -40,7 +45,7 @@ class GCNetconfig:
     eval_iter: int = 200  # the number of iterations for validation
     clip_max_norm: float = 0.1  # gradient clipping max norm
     device = "cuda" if torch.cuda.is_available() else "mps"
-    compile_mode: str = "reduce-overhead"  # "max-autotune"
+    compile_mode: str = "reduce-overhead"  # "reduce-overhead", "max-autotune"
     seed: int = 1618
     loss: str = "smooth_l1"
 
