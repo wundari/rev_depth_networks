@@ -178,20 +178,19 @@ class RDS_Handler:
         if background_flag:  # generate RDSs with cRDS background
             rds_batch_left, rds_batch_right = rds.create_rds_batch(
                 disp_ct_pix_list, dotMatch_ct
-            )
+            )  # [batch_size, len(disp_ct_pix_list), h, w]
             bg_message = "with cRDS background"
         else:  # without cRDS background
             rds_batch_left, rds_batch_right = rds.create_rds_without_bg_batch(
                 disp_ct_pix_list, dotMatch_ct
-            )
+            )  # [batch_size, len(disp_ct_pix), h, w]
             bg_message = "without cRDS background"
-        # rds_batch_right : [batch_size, len(disp_ct_pix), h, w]
 
-        # remapping rds into [len(disp_ct_pix) * batch_size, h, w, n_channels]
+        # [batch_size, len(disp_ct_pix), h, w] => [len(disp_ct_pix) * batch_size, h, w, n_rgb_channels]
         n_channels = 3  # rgb channels
-        rds_left = np.zeros((n_rds, rds.h_bg, rds.w_bg, n_channels), dtype=np.float32)
-        rds_right = np.zeros((n_rds, rds.h_bg, rds.w_bg, n_channels), dtype=np.float32)
-        rds_disp = np.zeros(n_rds, dtype=np.int8)
+        rds_left = np.empty((n_rds, rds.h_bg, rds.w_bg, n_channels), dtype=np.float32)
+        rds_right = np.empty((n_rds, rds.h_bg, rds.w_bg, n_channels), dtype=np.float32)
+        rds_disp = np.empty(n_rds, dtype=np.int8)
         count = 0
         for d in range(len(disp_ct_pix_list)):
             print(
@@ -295,11 +294,11 @@ class RDS_Handler:
             bg_message = "without cRDS background"
         # rds_batch_right : [batch_size, len(disp_ct_pix), h, w]
 
-        # remapping rds into [len(disp_ct_pix) * batch_size, h, w, n_channels]
+        # [batch_size, len(disp_ct_pix), h, w] => [len(disp_ct_pix) * batch_size, h, w, n_rgb_channels]
         n_channels = 3  # rgb channels
-        rds_left = np.zeros((n_rds, rds.h_bg, rds.w_bg, n_channels), dtype=np.float32)
-        rds_right = np.zeros((n_rds, rds.h_bg, rds.w_bg, n_channels), dtype=np.float32)
-        rds_disp = np.zeros(n_rds, dtype=np.int8)
+        rds_left = np.empty((n_rds, rds.h_bg, rds.w_bg, n_channels), dtype=np.float32)
+        rds_right = np.empty((n_rds, rds.h_bg, rds.w_bg, n_channels), dtype=np.float32)
+        rds_disp = np.empty(n_rds, dtype=np.int8)
         count = 0
         for d in range(len(disp_ct_pix_list)):
             print(

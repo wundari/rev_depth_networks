@@ -1,11 +1,8 @@
 # %% load necessary modules
 import torch
-import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
 from torch import nn
-from torch.nn import functional as F
 import numpy as np
-import random
 import matplotlib.pyplot as plt
 import seaborn as sns
 from tqdm import tqdm
@@ -22,47 +19,43 @@ from SVM.svm_analysis_v4 import *
 from utilities.misc import NestedTensor
 from utilities.output_hook import ModuleOutputsHook
 
-# settings for pytorch 2.0 compile
-torch.backends.cuda.matmul.allow_tf32 = True  # allow tf32 on matmul
-torch.backends.cudnn.allow_tf32 = True  # allow tf32 on cudnn
-torch.backends.cudnn.benchmark = False
-torch.backends.cudnn.deterministic = True
-torch._dynamo.config.suppress_errors = True
-
-# reproducibility
-seed_number = 3407  # 12321
-torch.manual_seed(seed_number)
-torch.cuda.manual_seed(seed_number)
-random.seed(seed_number)
-np.random.seed(seed_number)
-os.environ["PYTHONHASHSEED"] = str(seed_number)
-
-
-# initialize random seed number for dataloader
-def seed_worker(worker_id):
-    worker_seed = seed_number  # torch.initial_seed()  % 2**32
-    np.random.seed(worker_seed)
-    random.seed(worker_seed)
-
-    # print out seed number for each worker
-    # np_seed = np.random.get_state()[1][0]
-    # py_seed = random.getstate()[1][0]
-
-    # print(f"{worker_id} seed pytorch: {worker_seed}\n")
-    # print(f"{worker_id} seed numpy: {np_seed}\n")
-    # print(f"{worker_id} seed python: {py_seed}\n")
-
-
-g = torch.Generator()
-g.manual_seed(seed_number)
-
 
 # %%
+class NormalizeRDS:
+    """Normalize signed [-1,1] RGB arrays; no uint8 ToTensor ambiguity/lambda."""
+
+    # mean = (0.485 * 255.0, 0.456 * 255.0, 0.406 * 255.0)
+    # std = (0.229 * 255.0, 0.224 * 255.0, 0.225 * 255.0)
+    # mean = (0.485, 0.456, 0.406)
+    # std = (0.229, 0.224, 0.225)
+    # mean = np.array([0.5, 0.5, 0.5])
+    # std = np.array([0.5, 0.5, 0.5])
+
+    _mean = torch.tensor([0.485, 0.456, 0.406])[:, None, None]
+    _std = torch.tensor([0.229, 0.224, 0.225])[:, None, None]
+
+    def __call__(self, image):
+        x = torch.as_tensor(np.ascontiguousarray(image), dtype=torch.float32).permute(
+            2, 0, 1
+        )
+        if not torch.isfinite(x).all() or x.min() < -1 or x.max() > 1:
+            raise ValueError("RDS pixels must be finite in [-1,1]")
+
+        return ((x + 1) / 2 - self._mean) / self._std
+
+
 class RDSAnalysis(Engine):
 
     def __init__(self, config, params_rds: dict) -> None:
 
         super().__init__(config)
+
+        if not config.load_state:
+            raise ValueError(
+                "Set config.load_state=True to analyze a trained checkpoint; random-model controls require allow_random_model=True"
+            )
+        if config.compile_mode is not None:
+            raise ValueError("Use compile_mode=None for RDS analysis and layer hooks")
 
         # rds parameters
         self.params_rds = params_rds
@@ -83,23 +76,15 @@ class RDSAnalysis(Engine):
         ]  # disparity magnitude (near, far).
         self.n_bootstrap = params_rds["n_bootstrap"]
 
-        # transform rds to tensor and in range [0, 1]
-        # self.transform_data = transforms.Compose(
-        #     [transforms.ToTensor(), transforms.Lambda(lambda t: (t + 1.0) / 2.0)]
-        # )
-        # mean = (0.485 * 255.0, 0.456 * 255.0, 0.406 * 255.0)
-        # std = (0.229 * 255.0, 0.224 * 255.0, 0.225 * 255.0)
-        mean = (0.485, 0.456, 0.406)
-        std = (0.229, 0.224, 0.225)
-        # mean = np.array([0.5, 0.5, 0.5])
-        # std = np.array([0.5, 0.5, 0.5])
-        self.transform_data = transforms.Compose(
-            [
-                transforms.ToTensor(),
-                transforms.Lambda(lambda t: (t + 1.0) / 2.0),
-                transforms.Normalize(mean, std),
-            ]
+        # check if n_rds is divisible by batch_size_rds
+        n_total = len(self.disp_ct_pix_list) * self.n_rds_each_disp
+        assert n_total % self.batch_size == 0, (
+            f"batch_size={self.batch_size} must evenly divide n_total={n_total} "
+            "when drop_last=True, or samples will be silently dropped."
         )
+
+        # transform rds to tensor and in range [0, 1]
+        self.transform_data = NormalizeRDS()
 
         # dirs for rds analysis
         self.rds_dir = os.path.join(
@@ -139,6 +124,7 @@ class RDSAnalysis(Engine):
             self.model.decoder.layer37,
         ]
 
+    @torch.no_grad()
     def compute_layer_activations(
         self,
         input_data: NestedTensor,
@@ -172,18 +158,17 @@ class RDSAnalysis(Engine):
             hook = ModuleOutputsHook([target])
             # hook = ModuleOutputsHook([model.layer36a])
 
-        # compute model's output.
-        logits = self.model(input_data)
-
-        # consume_outputs return the captured values and resets the hook's state
-        # compute module output
-        module_outputs = hook.consume_outputs()
-        # activations = module_outputs[target]
-        # activations = module_outputs[model.layer36a]
-
-        hook.remove_hooks()
-
-        return module_outputs
+        modes = {m: m.training for m in self.model.modules()}
+        self.model.eval()
+        try:
+            self.model(input_data)
+            return {
+                m: value.detach().clone() for m, value in hook.consume_outputs().items()
+            }
+        finally:
+            hook.remove_hooks()
+            for module, mode in modes.items():
+                module.training = mode
 
     @torch.no_grad()
     def compute_disp_map_rds(self, dotMatch, dotDens, background_flag, pedestal_flag):
@@ -234,9 +219,7 @@ class RDSAnalysis(Engine):
             shuffle=False,
             pin_memory=True,
             drop_last=True,
-            num_workers=1,
-            worker_init_fn=seed_worker,
-            generator=g,
+            num_workers=0,
         )
 
         pred_disp = torch.empty(
@@ -248,9 +231,11 @@ class RDSAnalysis(Engine):
         )
 
         # predict disparity map
+        self.model.eval()
         tepoch = tqdm(rds_loader)
         for i, (inputs_left, inputs_right, disps) in enumerate(tepoch):
-            # (inputs_left, inputs_right, disps) = next(iter(rds_loader))
+
+            # inputs_left, inputs_right, disps = next(iter(rds_loader))
 
             # generate disparity direction
             ref = disps / 10.0
@@ -263,24 +248,16 @@ class RDSAnalysis(Engine):
             #     ),
             #     ref=ref.pin_memory().to(self.config.device, non_blocking=True),
             # )
-            if ref.mean() > 0:
+            if ref.mean() >= 0:
                 input_data = NestedTensor(
-                    left=inputs_left.pin_memory().to(
-                        self.config.device, non_blocking=True
-                    ),
-                    right=inputs_right.pin_memory().to(
-                        self.config.device, non_blocking=True
-                    ),
+                    left=inputs_left.to(self.config.device, non_blocking=True),
+                    right=inputs_right.to(self.config.device, non_blocking=True),
                     ref=ref.pin_memory().to(self.config.device, non_blocking=True),
                 )
             else:
                 input_data = NestedTensor(
-                    left=inputs_right.pin_memory().to(
-                        self.config.device, non_blocking=True
-                    ),
-                    right=inputs_left.pin_memory().to(
-                        self.config.device, non_blocking=True
-                    ),
+                    left=inputs_right.to(self.config.device, non_blocking=True),
+                    right=inputs_left.to(self.config.device, non_blocking=True),
                     ref=ref.pin_memory().to(self.config.device, non_blocking=True),
                 )
 
@@ -307,7 +284,7 @@ class RDSAnalysis(Engine):
             id_start = i * self.batch_size
             id_end = id_start + self.batch_size
             pred_disp_labels[id_start:id_end] = disps
-            pred_disp[id_start:id_end] = disp_pred
+            pred_disp[id_start:id_end] = disp_pred.detach().float().cpu()
 
             tepoch.set_description(
                 f"RDS dotMatch: {dotMatch:.2f}, "
@@ -317,7 +294,6 @@ class RDSAnalysis(Engine):
 
         return pred_disp, pred_disp_labels
 
-    @torch.no_grad()
     def compute_disp_map_rds_group(
         self, dotDens_list: list, background_flag: bool, pedestal_flag: bool
     ) -> None:
@@ -429,137 +405,6 @@ class RDSAnalysis(Engine):
         print("score ards: ", score_ards_bootstrap.mean(axis=0))
         print("score hmrds: ", score_hmrds_bootstrap.mean(axis=0))
         print("score crds: ", score_crds_bootstrap.mean(axis=0))
-
-    # def xDecode(self, dotDens_list, n_bootstrap, background_flag):
-    #     """
-    #     Perform cross-decoding: cRDS vs aRDS and cRDS vs hmRDS.
-
-    #     Args:
-    #         dotDens_list ([list]): a list containing dot densities
-
-    #         n_bootstrap (int): the number of bootstrap iteration
-
-    #         background_flag ([binary 1/0]): a binary flag indicating
-    #                 whether the RDS is surrounded by cRDS background (1) or not (0)
-
-    #     """
-    #     # load predicted disparity data for crds
-    #     disp_map = np.load(f"{self.xDecode_dir}/pred_disp_crds.npy")
-    #     # load disparity labels for crds
-    #     Y_train = np.load(f"{self.xDecode_dir}/pred_disp_labels_crds.npy")
-
-    #     # average across rows, [len(dotDens_list), len(disp_ct_pix) * n_rds_each_disp, h, w] =>
-    #     # [len(dotDens_list), len(disp_ct_pix) * n_rds_each_disp, w]
-    #     disp_map_avg = disp_map.mean(axis=-2)
-
-    #     # compute mean and std for normalization across batch, for each dot density
-    #     x_mean_all_dotDens = disp_map_avg.mean(
-    #         axis=1, keepdims=True
-    #     )  # [n_dotDens, 1, w]
-    #     x_std_all_dotDens = disp_map_avg.std(axis=1, keepdims=True)  # [n_dotDens, 1, w]
-    #     # prevent division by zero
-    #     x_std_all_dotDens[x_std_all_dotDens == 0] = 1e-6
-
-    #     # standardize training data crds
-    #     crds_norm = (
-    #         disp_map_avg - x_mean_all_dotDens
-    #     ) / x_std_all_dotDens  # [len(dotDens_list), len(disp_ct_pix) * n_rds_each_disp, w]
-    #     Y_train = Y_train.reshape(disp_map_avg.shape[0], -1)
-
-    #     ## aRDS
-    #     # load predicted disparity data for ards
-    #     disp_map = np.load(f"{self.xDecode_dir}/pred_disp_ards.npy")
-    #     # load disparity labels for ards
-    #     Y_ards = np.load(f"{self.xDecode_dir}/pred_disp_labels_ards.npy")
-
-    #     # average across rows
-    #     disp_map_avg = disp_map.mean(
-    #         axis=-2
-    #     )  # [len(dotDens_list), len(disp_ct_pix) * n_rds_each_disp, w]
-
-    #     # standardize data
-    #     ards_norm = (disp_map_avg - x_mean_all_dotDens) / x_std_all_dotDens
-    #     Y_ards = Y_ards.reshape(disp_map_avg.shape[0], -1)
-
-    #     ## hmRDS
-    #     # load predicted disparity data for ards
-    #     disp_map = np.load(f"{self.xDecode_dir}/pred_disp_hmrds.npy")
-    #     # load disparity labels for ards
-    #     Y_hmrds = np.load(f"{self.xDecode_dir}/pred_disp_labels_hmrds.npy")
-
-    #     # average across rows
-    #     disp_map_avg = disp_map.mean(
-    #         axis=-2
-    #     )  # [len(dotDens_list), len(disp_ct_pix) * n_rds_each_disp, w]
-
-    #     # normalize data
-    #     hmrds_norm = (disp_map_avg - x_mean_all_dotDens) / x_std_all_dotDens
-    #     Y_hmrds = Y_hmrds.reshape(disp_map_avg.shape[0], -1)
-
-    #     # classifying rds with SVM
-    #     split_train_ratio = 0.8
-    #     n_samples = crds_norm.shape[1]
-    #     n_train = int(split_train_ratio * n_samples)  # number of training dataset
-
-    #     score_ards_bootstrap = np.empty(
-    #         (n_bootstrap, len(dotDens_list)), dtype=np.float32
-    #     )
-    #     score_hmrds_bootstrap = np.empty(
-    #         (n_bootstrap, len(dotDens_list)), dtype=np.float32
-    #     )
-    #     score_crds_bootstrap = np.empty(
-    #         (n_bootstrap, len(dotDens_list)), dtype=np.float32
-    #     )
-
-    #     for dd in range(len(dotDens_list)):
-    #         # bootstrap loop
-    #         for i_bootstrap in range(n_bootstrap):
-
-    #             print(
-    #                 f"Cross-decoding, dotDens: {dotDens_list[dd]:.2f}, "
-    #                 + f"bootstrap: {i_bootstrap}/{n_bootstrap}"
-    #             )
-
-    #             # generate random numbers for splitting train and test dataset
-    #             idx = np.random.permutation(n_samples)
-    #             idx_train = idx[:n_train]
-    #             idx_test = idx[n_train:]
-
-    #             # set up cRDS training dataset
-    #             x_train = crds_norm[dd, idx_train]  # [n_train, w]
-    #             y_train = Y_train[dd, idx_train]  # [n_train]
-
-    #             # train classifier
-    #             clf = svm.SVC(kernel="linear", cache_size=1000)
-    #             clf.fit(x_train, y_train)
-
-    #             # evaluate on ards
-    #             x_test = ards_norm[dd]  # [n_samples, w]
-    #             y_test = Y_ards[dd]  # [n_samples]
-    #             score_ards_bootstrap[i_bootstrap, dd] = clf.score(x_test, y_test)
-
-    #             # evaluate on hmrds
-    #             x_test = hmrds_norm[dd]  # [n_samples, w]
-    #             y_test = Y_hmrds[dd]  # [n_samples]
-    #             score_hmrds_bootstrap[i_bootstrap, dd] = clf.score(x_test, y_test)
-
-    #             # evaluate on crds test subset
-    #             x_test = crds_norm[dd, idx_test]  # [n_test, w]
-    #             y_test = Y_train[dd, idx_test]  # [n_test]
-    #             # fit
-    #             score_crds_bootstrap[i_bootstrap, dd] = clf.score(x_test, y_test)
-
-    #             # clean up svm classifier
-    #             del clf
-
-    #     # save file
-    #     np.save(f"{self.xDecode_dir}/score_ards_bootstrap.npy", score_ards_bootstrap)
-    #     np.save(f"{self.xDecode_dir}/score_hmrds_bootstrap.npy", score_hmrds_bootstrap)
-    #     np.save(f"{self.xDecode_dir}/score_crds_bootstrap.npy", score_crds_bootstrap)
-
-    #     print("score ards: ", score_ards_bootstrap.mean(axis=0))
-    #     print("score hmrds: ", score_hmrds_bootstrap.mean(axis=0))
-    #     print("score crds: ", score_crds_bootstrap.mean(axis=0))
 
     def plotLine_xDecode_at_dotDens(self, dotDens, save_flag):
         """
@@ -913,6 +758,38 @@ class RDSAnalysis(Engine):
                 bbox_inches="tight",
             )
 
+    def _plot_disp_row(self, axes_row, dd, dotDens, panels, v_min, v_max, cmap, avg):
+        """
+        panels: list of (disp_map, labels, title_suffix) for ards/hmrds/crds
+        """
+
+        def _make_grid(near, far):
+            h, w = near.shape
+            grid = np.zeros((h, 2 * w), dtype=np.float32)
+            grid[:, :w], grid[:, w:] = near, far
+            return grid
+
+        for col, (disp_map, labels, name) in enumerate(panels):
+            near_idx = np.where(labels[dd] > 0)[0]
+            far_idx = np.where(labels[dd] < 0)[0]
+            if avg:
+                near, far = disp_map[dd, near_idx].mean(axis=0), disp_map[
+                    dd, far_idx
+                ].mean(axis=0)
+            else:
+                near, far = disp_map[dd, near_idx[0]], disp_map[dd, far_idx[0]]
+
+            grid = _make_grid(near, far)
+            im = axes_row[col].imshow(
+                grid, vmin=v_min, vmax=v_max, cmap=cmap, interpolation="nearest"
+            )
+            axes_row[col].axis("off")
+            axes_row[col].set_title(f"dotDens: {dotDens:.1f}, {name}: near//far")
+            axes_row[col].plot(
+                [near.shape[1]] * 2, [0, near.shape[0]], color="k", linewidth=3
+            )
+            plt.colorbar(im, fraction=0.02, pad=0.05)
+
     def plotHeat_dispMap(self, save_flag):
         """
         plot the heat map of the predicted disparity map for a single trial
@@ -920,16 +797,6 @@ class RDSAnalysis(Engine):
         Args:
             save_flag (1/0 binary): save picture (1) or not (0)
         """
-
-        def _make_grid(dispMap_near, dispMap_far):
-
-            h_img, w_img = dispMap_near.shape
-            img_grid = np.zeros((h_img, 2 * w_img), dtype=np.float32)
-
-            img_grid[:, 0:w_img] = dispMap_near
-            img_grid[:, w_img:] = dispMap_far
-
-            return img_grid
 
         # load data
         disp_map_ards = np.load(f"{self.xDecode_dir}/pred_disp_ards.npy")
@@ -968,94 +835,15 @@ class RDSAnalysis(Engine):
             v_max = c * self.target_disp
 
         cmap = "coolwarm"
-        for dd in range(len(self.dotDens_list)):
-            dotDens = self.dotDens_list[dd]
-
-            # ards
-            # ards_near
-            disp_id = np.where(disp_map_ards_labels[dd] > 0)[0][0]
-            disp_near = disp_map_ards[dd, disp_id]
-            # ards_far
-            disp_id = np.where(disp_map_ards_labels[dd] < 0)[0][0]
-            disp_far = disp_map_ards[dd, disp_id]
-            # create a grid
-            disp_grid = _make_grid(disp_near, disp_far)
-            # plot
-            im = axes[dd, 0].imshow(
-                disp_grid,
-                vmin=v_min,
-                vmax=v_max,
-                cmap=cmap,
-                interpolation="nearest",
+        for dd, dotDens in enumerate(self.dotDens_list):
+            panels = [
+                (disp_map_ards, disp_map_ards_labels, "aRDS"),
+                (disp_map_hmrds, disp_map_hmrds_labels, "hmRDS"),
+                (disp_map_crds, disp_map_crds_labels, "cRDS"),
+            ]
+            self._plot_disp_row(
+                axes[dd], dd, dotDens, panels, v_min, v_max, cmap, avg=False
             )
-            axes[dd, 0].axis("off")
-            axes[dd, 0].set_title(f"dotDens: {dotDens:.1f}, aRDS: near//far")
-            # make a vertical boundary line
-            axes[dd, 0].plot(
-                [disp_near.shape[1], disp_near.shape[1]],
-                [0, disp_near.shape[0]],
-                color="k",
-                linewidth=3,
-            )
-            # color bar
-            plt.colorbar(im, fraction=0.02, pad=0.05)
-
-            # hmrds
-            # hmrds near
-            disp_id = np.where(disp_map_hmrds_labels[dd] > 0)[0][0]
-            disp_near = disp_map_hmrds[dd, disp_id]
-            # hmrds far
-            disp_id = np.where(disp_map_hmrds_labels[dd] < 0)[0][0]
-            disp_far = disp_map_hmrds[dd, disp_id]
-            # create a grid
-            disp_grid = _make_grid(disp_near, disp_far)
-            # plot
-            im = axes[dd, 1].imshow(
-                disp_grid,
-                vmin=v_min,
-                vmax=v_max,
-                cmap=cmap,
-                interpolation="nearest",
-            )
-            axes[dd, 1].axis("off")
-            axes[dd, 1].set_title(f"dotDens: {dotDens:.1f}, hmRDS: near//far")
-            # make a vertical boundary line
-            axes[dd, 1].plot(
-                [disp_near.shape[1], disp_near.shape[1]],
-                [0, disp_near.shape[0]],
-                color="k",
-                linewidth=3,
-            )
-            # color bar
-            plt.colorbar(im, fraction=0.02, pad=0.05)
-
-            # crds
-            # crds near
-            disp_id = np.where(disp_map_crds_labels[dd] > 0)[0][0]
-            disp_near = disp_map_crds[dd, disp_id]
-            # crds far
-            disp_id = np.where(disp_map_crds_labels[dd] < 0)[0][0]
-            disp_far = disp_map_crds[dd, disp_id]
-            # create a grid
-            disp_grid = _make_grid(disp_near, disp_far)
-            im = axes[dd, 2].imshow(
-                disp_grid,
-                vmin=v_min,
-                vmax=v_max,
-                cmap=cmap,
-                interpolation="nearest",
-            )
-            axes[dd, 2].axis("off")
-            axes[dd, 2].set_title(f"dotDens: {dotDens:.1f}, cRDS: near//far")
-            # make a vertical boundary line
-            axes[dd, 2].plot(
-                [disp_near.shape[1], disp_near.shape[1]],
-                [0, disp_near.shape[0]],
-                color="k",
-                linewidth=3,
-            )
-            # color bar
-            plt.colorbar(im, fraction=0.02, pad=0.05)
 
         if save_flag:
             if not os.path.exists(f"{self.xDecode_dir}/Plots"):
@@ -1076,16 +864,6 @@ class RDSAnalysis(Engine):
             save_flag (1/0 binary): save picture (1) or not (0)
 
         """
-
-        def _make_grid(dispMap_near, dispMap_far):
-
-            h_img, w_img = dispMap_near.shape
-            img_grid = np.zeros((h_img, 2 * w_img), dtype=np.float32)
-
-            img_grid[:, 0:w_img] = dispMap_near
-            img_grid[:, w_img:] = dispMap_far
-
-            return img_grid
 
         # load data
         disp_map_ards = np.load(f"{self.xDecode_dir}/pred_disp_ards.npy")
@@ -1125,94 +903,15 @@ class RDSAnalysis(Engine):
             v_max = c * self.target_disp
 
         cmap = "coolwarm"
-        for dd in range(len(self.dotDens_list)):
-            dotDens = self.dotDens_list[dd]
-
-            # ards
-            # ards_near
-            disp_id = np.where(disp_map_ards_labels[dd] > 0)[0]
-            disp_near = disp_map_ards[dd, disp_id].mean(axis=0)
-            # ards_far
-            disp_id = np.where(disp_map_ards_labels[dd] < 0)[0]
-            disp_far = disp_map_ards[dd, disp_id].mean(axis=0)
-            # create a grid
-            disp_grid = _make_grid(disp_near, disp_far)
-            # plot
-            im = axes[dd, 0].imshow(
-                disp_grid,
-                vmin=v_min,
-                vmax=v_max,
-                cmap=cmap,
-                interpolation="nearest",
+        for dd, dotDens in enumerate(self.dotDens_list):
+            panels = [
+                (disp_map_ards, disp_map_ards_labels, "aRDS"),
+                (disp_map_hmrds, disp_map_hmrds_labels, "hmRDS"),
+                (disp_map_crds, disp_map_crds_labels, "cRDS"),
+            ]
+            self._plot_disp_row(
+                axes[dd], dd, dotDens, panels, v_min, v_max, cmap, avg=True
             )
-            axes[dd, 0].axis("off")
-            axes[dd, 0].set_title(f"dotDens: {dotDens:.1f}, aRDS: near//far")
-            # make a vertical boundary line
-            axes[dd, 0].plot(
-                [disp_near.shape[1], disp_near.shape[1]],
-                [0, disp_near.shape[0]],
-                color="k",
-                linewidth=3,
-            )
-            # color bar
-            plt.colorbar(im, fraction=0.02, pad=0.05)
-
-            # hmrds
-            # hmrds near
-            disp_id = np.where(disp_map_hmrds_labels[dd] > 0)[0]
-            disp_near = disp_map_hmrds[dd, disp_id].mean(axis=0)
-            # hmrds far
-            disp_id = np.where(disp_map_hmrds_labels[dd] < 0)[0]
-            disp_far = disp_map_hmrds[dd, disp_id].mean(axis=0)
-            # create a grid
-            disp_grid = _make_grid(disp_near, disp_far)
-            # plot
-            im = axes[dd, 1].imshow(
-                disp_grid,
-                vmin=v_min,
-                vmax=v_max,
-                cmap=cmap,
-                interpolation="nearest",
-            )
-            axes[dd, 1].axis("off")
-            axes[dd, 1].set_title(f"dotDens: {dotDens:.1f}, hmRDS: near//far")
-            # make a vertical boundary line
-            axes[dd, 1].plot(
-                [disp_near.shape[1], disp_near.shape[1]],
-                [0, disp_near.shape[0]],
-                color="k",
-                linewidth=3,
-            )
-            # color bar
-            plt.colorbar(im, fraction=0.02, pad=0.05)
-
-            # crds
-            # crds near
-            disp_id = np.where(disp_map_crds_labels[dd] > 0)[0]
-            disp_near = disp_map_crds[dd, disp_id].mean(axis=0)
-            # crds far
-            disp_id = np.where(disp_map_crds_labels[dd] < 0)[0]
-            disp_far = disp_map_crds[dd, disp_id].mean(axis=0)
-            # create a grid
-            disp_grid = _make_grid(disp_near, disp_far)
-            im = axes[dd, 2].imshow(
-                disp_grid,
-                vmin=v_min,
-                vmax=v_max,
-                cmap=cmap,
-                interpolation="nearest",
-            )
-            axes[dd, 2].axis("off")
-            axes[dd, 2].set_title(f"dotDens: {dotDens:.1f}, cRDS: near//far")
-            # make a vertical boundary line
-            axes[dd, 2].plot(
-                [disp_near.shape[1], disp_near.shape[1]],
-                [0, disp_near.shape[0]],
-                color="k",
-                linewidth=3,
-            )
-            # color bar
-            plt.colorbar(im, fraction=0.02, pad=0.05)
 
         if save_flag:
             if not os.path.exists(f"{self.xDecode_dir}/Plots"):

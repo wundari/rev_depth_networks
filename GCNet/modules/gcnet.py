@@ -14,6 +14,9 @@ class GCNet(nn.Module):
     def __init__(self, config):
 
         super().__init__()
+        if any(value <= 0 or value % 32 for value in
+               (config.max_disp, config.img_height, config.img_width)):
+            raise ValueError("GCNet disparity range and crop dimensions must be positive multiples of 32")
         self.max_disp = config.max_disp
 
         self.encoder = build_encoder(config)

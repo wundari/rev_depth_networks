@@ -401,93 +401,27 @@ class StereoDecoder(nn.Module):
     #     return costVol
 
     def build_costVol(self, feat_left: Tensor, feat_right: Tensor):
-        """
-        construct disparity cost volume 4D tensor
-        input_left and input_right are concatenated along the feature axis
-
-         Args:
-             input_left ([b, c, h, w] tensor):
-                 input left
-             input_right ([b, c, h, w] tensor):
-                 input right
-        """
-
-        b, c, h, w = feat_left.size()
-
+        if feat_left.shape != feat_right.shape:
+            raise ValueError("Left/right feature shapes must match")
+        b, c, h, w = feat_left.shape
         D = self.max_disp // 2
-        # padding the left and right side of the feat_left with zeros
-        padded_left = F.pad(feat_left, (D // 2, D // 2))
-        # [b=2, c=32, h=128, w + disp=352]
-
-        # concatenate input_right along the feature axis with the input_left
-        cost_vol_list = []
+        volumes = []
         for d in range(D):
-
-            # padding the left and right side of the input_right with zeros
-            padded_right = F.pad(feat_right, (d, D - d))
-            # [b=2, c=32, h=128, (d|w|D-d)=352]
-
-            # concatenate left and right features along the feature axis
+            right = F.pad(feat_right, (d, D - d))[..., D // 2:D // 2 + w]
+            left = feat_left
             if self.binocular_interaction == "default":
-                # default
-                temp = torch.cat(
-                    (
-                        padded_left,
-                        padded_right,
-                    ),
-                    dim=1,
-                )  # [b=2, 2xc=64, h=128, (d|w|D-d)=352]
-
-            elif self.binocular_interaction == "cmm":  # CMM
-                temp = torch.cat(
-                    (
-                        padded_left * padded_right / c,
-                        torch.relu(padded_left * padded_right / c),
-                    ),
-                    dim=1,
-                )  # [b=2, 2xc=64, h=128, (d|w|D-d)=352]
-
-            elif self.binocular_interaction == "bem":  # BEM
-                temp = torch.cat(
-                    (
-                        padded_left * padded_right / c,
-                        (padded_left**2 + padded_right**2) / c,
-                    ),
-                    dim=1,
-                )  # [b=2, 2xc=64, h=128, (d|w|D-d)=352]
-
-            elif self.binocular_interaction == "sum_diff":  # sum-diff channels
-                temp = torch.cat(
-                    (
-                        padded_left + padded_right,
-                        padded_left - padded_right,
-                    ),
-                    dim=1,
-                )  # [b=2, 2xc=64, h=128, (d|w|D-d)=352]
-
-            # [b=2, 2xc=64, h=128, (d|w|D-d)=352]
-            cost_vol_list.append(temp)
-
-        # merge all along the feature axis,
-        # [b, D x 2 x c, h, w]
-        costVol = torch.cat(cost_vol_list, dim=1)
-
-        # reshape, [b, D, 2 x c, h, w]
-        costVol = costVol.view(
-            b,
-            D,
-            2 * c,
-            h,
-            w + D,
-        )
-
-        # swap axis, [b, 2xc, D, h, w + D]
-        costVol = costVol.permute(0, 2, 1, 3, 4)
-
-        # crop the image, [b, 2xc, D, h, w]
-        costVol = costVol[:, :, :, :, D // 2 : w + D // 2]
-
-        return costVol
+                channels = (left, right)
+            elif self.binocular_interaction == "bem":
+                channels = (left * right / c, (left.square() + right.square()) / c)
+            elif self.binocular_interaction == "cmm":
+                product = left * right / c
+                channels = (product, F.relu(product))
+            elif self.binocular_interaction == "sum_diff":
+                channels = (left + right, left - right)
+            else:
+                raise ValueError(f"Unknown interaction: {self.binocular_interaction}")
+            volumes.append(torch.cat(channels, dim=1))
+        return torch.stack(volumes, dim=2)
 
     def forward(self, feat_left: Tensor, feat_right: Tensor):
         # input_left: [n_batch, n_features, img_height, img_width]
@@ -639,7 +573,7 @@ class StereoDecoder(nn.Module):
         # input layer: layer 36b
         # [n_batch, n_features, max_disp, img_height, img_width]
         # [n_batch, 1, 192, 256, 512]
-        out_37 = self.layer37(out_36b).squeeze()
+        out_37 = self.layer37(out_36b).squeeze(1)
 
         # squeeze
         # [n_batch, max_disp, img_height, img_width]
@@ -653,7 +587,7 @@ class StereoDecoder(nn.Module):
         # compute probability
         # [n_batch, max_disp, img_height, img_width]
         # [n_batch, 192, 256, 512]
-        logits = F.softmax(-out_37, dim=1)
+        logits = F.softmax(-out_37, dim=1, dtype=torch.float32)
 
         return logits
 

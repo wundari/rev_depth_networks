@@ -45,9 +45,7 @@ class RDS:
         # dotDens = 0.25
 
         # calculate nDots:
-        nDots = np.int32(
-            self.dotDens * self.w_bg * self.h_bg / (np.pi * self.rDot**2)
-        )
+        nDots = np.int32(self.dotDens * self.w_bg * self.h_bg / (np.pi * self.rDot**2))
         # nDots = np.int32(dotDens * w_bg*h_bg/(np.pi*rDot**2))
 
         # random dot positions
@@ -100,7 +98,7 @@ class RDS:
             pos_x_right = np.random.randint(0, nx, nDots_ct).astype(np.int32)
             pos_y_right = np.random.randint(0, ny, nDots_ct).astype(np.int32)
             # distribute white dots
-            for d in np.arange(0, np.int(nDots_ct / 2)):
+            for d in np.arange(0, int(nDots_ct / 2)):
                 rr, cc = disk(
                     (pos_x_left[d], pos_y_left[d]), rDot_pix, shape=np.shape(rds_ct)
                 )
@@ -112,7 +110,7 @@ class RDS:
                 rds_ct_right[rr, cc] = 1
 
             # distribute black dots
-            for d in np.arange(np.int(nDots_ct / 2) + 1, nDots_ct):
+            for d in np.arange(int(nDots_ct / 2) + 1, nDots_ct):
                 rr, cc = disk(
                     (pos_x_left[d], pos_y_left[d]), rDot_pix, shape=np.shape(rds_ct)
                 )

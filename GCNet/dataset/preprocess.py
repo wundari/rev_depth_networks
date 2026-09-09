@@ -46,19 +46,6 @@ def seed_stereo_worker(worker_id):
         if transformation is not None:
             transformation.set_random_seed(worker_seed)
 
-###
-from torchvision import transforms
-
-DATA_MEANS = np.array([0.5, 0.5, 0.5])
-DATA_STD = np.array([0.5, 0.5, 0.5])
-
-transform_data = transforms.Compose(
-    [transforms.ToTensor(), transforms.Normalize(DATA_MEANS, DATA_STD)]
-)
-
-###
-
-
 def denormalize(img):
     """
     De-normalize a tensor and return img

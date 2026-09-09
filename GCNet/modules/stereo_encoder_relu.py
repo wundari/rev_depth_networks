@@ -73,7 +73,7 @@ class StereoEncoder(nn.Module):
         # [b, 32, 128, 256]
         self.layer1 = nn.Sequential(
             nn.Conv2d(
-                3, config.base_channels, kernel_size=5, stride=2, padding=2, bias=False
+                config.in_channels, config.base_channels, kernel_size=5, stride=2, padding=2, bias=False
             ),  # bias=False when use BatchNorm
             nn.BatchNorm2d(config.base_channels),
             nn.ReLU(inplace=True),

@@ -43,6 +43,7 @@ def readPFM(file):
 
     data = np.reshape(data, shape)
     data = np.flipud(data)
+    file.close()
     return data, scale
 
 
@@ -63,7 +64,7 @@ def writePFM(file, image, scale=1):
     else:
         raise Exception('Image must have H x W x 3, H x W x 1 or H x W dimensions.')
 
-    file.write('PF\n' if color else 'Pf\n'.encode())
+    file.write(b'PF\n' if color else b'Pf\n')
     file.write('%d %d\n'.encode() % (image.shape[1], image.shape[0]))
 
     endian = image.dtype.byteorder
@@ -74,3 +75,4 @@ def writePFM(file, image, scale=1):
     file.write('%f\n'.encode() % scale)
 
     image.tofile(file)
+    file.close()

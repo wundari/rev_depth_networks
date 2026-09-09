@@ -19,22 +19,16 @@ import math
 
 from dataset.scene_flow import SceneFlowFlyingThingsDataset
 from dataset.scene_flow import SceneFlowMonkaaDataset
-from dataset.loading import make_loader, make_train_eval_loader, batches_for_evaluation
 from modules.gcnet import build_gcnet
 from utilities.misc import NestedTensor
 
 from dataclasses import dataclass, asdict
 import json
+from jaxtyping import Float
 from config.config import GCNetconfig
 
-# reproducibility
 import random
-
-# settings for pytorch 2.0 compile
-torch.backends.cuda.matmul.allow_tf32 = True  # allow tf32 on matmul
-torch.backends.cudnn.allow_tf32 = True  # allow tf32 on cudnn
-torch.backends.cudnn.benchmark = False
-torch.backends.cudnn.deterministic = True
+from dataset.loading import make_loader, make_train_eval_loader, batches_for_evaluation
 
 
 # %%
@@ -43,10 +37,17 @@ class Engine:
     def __init__(self, config: GCNetconfig) -> None:
 
         self.config = config
-        random.seed(config.seed)
-        np.random.seed(config.seed)
-        torch.manual_seed(config.seed)
         self.device = config.device
+        random.seed(config.seed)
+        np.random.seed(config.seed % 2**32)
+        torch.manual_seed(config.seed)
+        torch.backends.cudnn.benchmark = not config.deterministic
+        torch.backends.cudnn.deterministic = config.deterministic
+        if config.amp_dtype not in {"float32", "float16", "bfloat16"}:
+            raise ValueError("Unknown amp_dtype")
+        if torch.device(self.device).type == "cuda" and config.amp_dtype == "bfloat16":
+            if not torch.cuda.is_bf16_supported():
+                raise ValueError("This GPU does not support BF16; choose float16")
         self.h = config.img_height
         self.w = config.img_width
 
@@ -58,6 +59,11 @@ class Engine:
         elif config.dataset == "sceneflow_monkaa":
             self.datadir = f"{parent_folder}/Dataset/SceneFlow_complete/Monkaa/"
 
+        else:
+            raise ValueError(f"Unsupported dataset: {config.dataset}")
+        if config.dataset_directory:
+            self.datadir = os.path.abspath(config.dataset_directory)
+
         # saving directory
         self.save_dir = os.path.join(
             "run", config.dataset, f"bino_interaction_{config.binocular_interaction}"
@@ -68,7 +74,7 @@ class Engine:
         # experiment directory
         runs = natsorted(glob.glob(os.path.join(self.save_dir, "experiment_*")))
         if config.load_state:
-            run_id = int(runs[-1].split("_")[-1]) if runs else 0
+            run_id = config.experiment_id
         else:
             run_id = int(runs[-1].split("_")[-1]) + 1 if runs else 0
         self.experiment_dir = os.path.join(
@@ -79,7 +85,8 @@ class Engine:
             os.makedirs(self.experiment_dir)
 
         # save config file
-        self.save_config()
+        if not config.load_state:
+            self.save_config()
 
         # pred_images directory
         self.pred_images_dir = os.path.join(self.experiment_dir, "pred_images")
@@ -101,8 +108,11 @@ class Engine:
                 f"experiment_{config.experiment_id}",
             )
             checkpoint = torch.load(
-                f"{self.experiment_dir}/{config.resume}", map_location="cuda"
+                f"{self.experiment_dir}/{config.resume}",
+                map_location=self.device,
+                weights_only=True,
             )
+            self._resume_checkpoint = checkpoint
             pretrained_dict = checkpoint["state_dict"]
 
             # fix the keys of the state dictionary
@@ -111,6 +121,7 @@ class Engine:
                 if k.startswith(unwanted_prefix):
                     pretrained_dict[k[len(unwanted_prefix) :]] = pretrained_dict.pop(k)
             self.model.load_state_dict(pretrained_dict)
+        self.model.to(self.device)
         # compile model
         if config.compile_mode is not None:
             self.model = torch.compile(
@@ -121,7 +132,7 @@ class Engine:
         # if self.train_or_eval_mode == "train":
         # self.model.train()  # training mode
         print(
-            f"GCNet was successfully loaded to {self.device}, "
+            f"GCNet was successfully loaded to {self.device}\n"
             + f"Binocular interaction: {config.binocular_interaction}\n"
             + f"Seed: {config.seed}\n"
             + f"Compile mode: {config.compile_mode}\n"
@@ -158,11 +169,21 @@ class Engine:
             )
             dataset_test = SceneFlowMonkaaDataset(self.datadir, self.config, "test")
 
-        return (
+        loaders = (
             make_loader(dataset_train, self.config, training=True),
             make_loader(dataset_validation, self.config, seed_offset=1),
             make_loader(dataset_test, self.config, seed_offset=2),
         )
+        manifest = {
+            split: ds.left_data
+            for split, ds in zip(
+                ("train", "validation", "test"),
+                (dataset_train, dataset_validation, dataset_test),
+            )
+        }
+        with open(Path(self.experiment_dir) / "split_manifest.json", "w") as stream:
+            json.dump(manifest, stream, indent=2)
+        return loaders
 
     def check_input(self, data_loader):
         # check input
@@ -276,8 +297,13 @@ class Engine:
         checkpoint = {
             "epoch": epoch,
             "iter": iter,
-            "state_dict": self.model.state_dict(),
+            "state_dict": getattr(self.model, "_orig_mod", self.model).state_dict(),
             "optimizer": optimizer.state_dict(),
+            "scaler": self._scaler.state_dict(),
+            "history": self.history,
+            "best_loss": self.best_loss,
+            "epoch_complete": not best,
+            "config": self.config.to_dict(),
             # "lr_scheduler": lr_scheduler.state_dict(),
             # "best_pred": prev_best,
         }
@@ -322,7 +348,7 @@ class Engine:
 
         # create adamw optimizer and use the fused version if it is available
         fused_available = "fused" in inspect.signature(torch.optim.AdamW).parameters
-        use_fused = fused_available and torch.cuda.is_available()
+        use_fused = fused_available and torch.device(self.device).type == "cuda"
         print(f"using fused AdamW: {use_fused}")
         optimizer = torch.optim.AdamW(
             optim_groups, lr=learning_rate, betas=(0.9, 0.95), eps=1e-8, fused=use_fused
@@ -331,27 +357,30 @@ class Engine:
         return optimizer
 
     def get_lr(self, it, max_steps):
-        # 1 linear warmup for warmup_iters steps
-        if it < self.config.warmup_steps:
-            return self.config.max_lr * (it + 1) / self.config.warmup_steps
-
-        # 2 if it > lr_decay_iters, return min learning rate
-        if it > max_steps:
+        if max_steps <= 0 or it < 0:
+            raise ValueError(
+                "Learning-rate schedule needs positive max_steps and nonnegative step"
+            )
+        if it >= max_steps - 1:
             return self.config.min_lr
-
-        # 3 in between, use cosine decay down to min learning rate
-        decay_ratio = (it - self.config.warmup_steps) / (
-            max_steps - self.config.warmup_steps
+        warmup = min(max(0, self.config.warmup_steps or 0), max(0, max_steps - 2))
+        if it < warmup:
+            return self.config.max_lr * (it + 1) / warmup
+        ratio = min(1.0, max(0.0, (it - warmup) / max(1, max_steps - 1 - warmup)))
+        return self.config.min_lr + 0.5 * (1 + math.cos(math.pi * ratio)) * (
+            self.config.max_lr - self.config.min_lr
         )
-        assert 0 <= decay_ratio <= 1
-        coeff = 0.5 * (
-            1.0 + math.cos(math.pi * decay_ratio)
-        )  # coeff starts at 1 and goes to 0
-        return self.config.min_lr + coeff * (self.config.max_lr - self.config.min_lr)
 
-    def train(self, train_loader, val_loader):
-        """Compatibility entry point for the maintained training loop."""
-        return self.train_v2(train_loader, val_loader)
+    def _autocast(self):
+        kind = torch.device(self.device).type
+        dtype = {
+            "bfloat16": torch.bfloat16,
+            "float16": torch.float16,
+            "float32": torch.float32,
+        }[self.config.amp_dtype]
+        return torch.autocast(
+            kind, dtype=dtype, enabled=kind == "cuda" and dtype != torch.float32
+        )
 
     def _to_device(self, batch):
         return NestedTensor(
@@ -362,339 +391,151 @@ class Engine:
         )
 
     def _evaluate_batches(self, loader, criterion):
-        total_loss = torch.zeros((), device=self.device)
+        total = torch.zeros((), device=self.device)
         correct = torch.zeros((), device=self.device)
         pixels = 0
-        with torch.no_grad():
-            for batch in batches_for_evaluation(loader, self.config.eval_iter):
-                inputs = self._to_device(batch)
-                with torch.autocast(
-                    device_type=torch.device(self.device).type,
-                    dtype=torch.bfloat16,
-                    enabled=torch.device(self.device).type == "cuda",
-                ):
-                    prediction = self.model(inputs)
-                    loss = criterion(inputs.disp, prediction)
-                count = inputs.disp.numel()
-                total_loss += loss * count
-                correct += ((prediction - inputs.disp).abs() < 3).sum()
-                pixels += count
-        return total_loss / pixels, correct / pixels, inputs, prediction
+        previous_mode = self.model.training
+        self.model.eval()
+        try:
+            with torch.no_grad():
+                for batch in batches_for_evaluation(loader, self.config.eval_iter):
+                    inputs = self._to_device(batch)
+                    with self._autocast():
+                        prediction = self.model(inputs)
+                    loss = criterion(prediction.float(), inputs.disp.float())
+                    n = inputs.disp.numel()
+                    total += loss * n
+                    correct += (
+                        (prediction.float() - inputs.disp).abs()
+                        < self.config.px_error_threshold
+                    ).sum()
+                    pixels += n
+        finally:
+            self.model.train(previous_mode)
+        result = total / pixels
+        if not torch.isfinite(result):
+            raise ValueError("Nonfinite evaluation loss; inspect disparity targets")
+        return result.item(), (correct / pixels).item()
+
+    def train(self, train_loader, val_loader):
+        return self.train_v2(train_loader, val_loader)
 
     def train_v2(self, train_loader, val_loader):
-
-        # build loss criterion
-        criterion = nn.SmoothL1Loss()
-        # criterion = nn.L1Loss()
-
-        # configure optimizer
-        optimizer = self.configure_optimizers(self.config.weight_decay, self.config.lr)
-        # optimizer = optim.AdamW(self.model.parameters(), lr=self.config.lr)
-
-        # scheduler
-        # scheduler = optim.lr_scheduler.MultiStepLR(
-        #     optimizer, milestones=np.arange(1, self.config.epochs), gamma=0.2
-        # )
-
-        if self.config.log_interval <= 0 or self.config.eval_interval <= 0:
+        config = self.config
+        if not len(train_loader) or config.epochs <= 0:
+            raise ValueError("Training requires a nonempty loader and positive epochs")
+        if config.log_interval <= 0 or config.eval_interval <= 0:
             raise ValueError("Logging and evaluation intervals must be positive")
-        if len(train_loader) == 0:
-            raise ValueError("Training loader is empty")
-        train_eval_loader = make_train_eval_loader(train_loader, self.config)
+        if config.clip_max_norm < 0:
+            raise ValueError("clip_max_norm must be nonnegative")
+        criteria = {"smooth_l1": nn.SmoothL1Loss, "l1": nn.L1Loss}
+        if config.loss not in criteria:
+            raise ValueError(f"Unknown loss: {config.loss}")
+        criterion = criteria[config.loss]()
+        optimizer = self.configure_optimizers(config.weight_decay, config.lr)
         scaler = torch.amp.GradScaler(
-            "cuda", enabled=torch.device(self.device).type == "cuda"
+            "cuda",
+            enabled=(
+                torch.device(self.device).type == "cuda"
+                and config.amp_dtype == "float16"
+            ),
         )
-        if self.config.epochs > 10:
-            max_steps_lr = 10 * len(train_loader)
-        else:
-            max_steps_lr = self.config.epochs * len(train_loader)
-        max_steps = self.config.epochs * len(train_loader)
-        max_norm = 1.0
-        losses_train = []
-        accs_train = []  # 3-pix accuracy for training
-        losses_val = []
-        accs_val = []  # 3-pix accuracy for val
-        loss_val_prev = np.inf
-
-        for epoch in range(self.config.start_epoch, self.config.epochs):
-            tepoch = tqdm(train_loader)
-
-            self.model.train()
-            # for i in range(iter_num, len(train_loader)):
-            for idx, inputs in enumerate(tepoch):
-                step = epoch * len(train_loader) + idx
-
-                inputs = self._to_device(inputs)
-
-                # zero the gradients
-                optimizer.zero_grad(set_to_none=True)
-
-                # forward pass
-                with torch.autocast(
-                    device_type=torch.device(self.device).type,
-                    dtype=torch.bfloat16,
-                    enabled=torch.device(self.device).type == "cuda",
-                ):
-                    disp_pred = self.model(inputs)
-
-                    # compute loss
-                    loss_train = criterion(inputs.disp, disp_pred)
-
-                    # compute 3-pix acc
-                    diff = torch.abs(disp_pred - inputs.disp)
-                    acc_train = (diff < 3).float().mean()
-
-                # terminate training if exploded
-                loss_value = loss_train.item()
-                if not math.isfinite(loss_value):
-                    print(f"Loss is {loss_value}, stopping training")
-                    sys.exit(1)
-
-                # backprop
-                scaler.scale(loss_train).backward()
-
-                # clip norm
-                # if max_norm > 0:
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm)
-
-                # update learning rate
-                lr = self.get_lr(step, max_steps_lr)
-                for param_group in optimizer.param_groups:
-                    param_group["lr"] = lr
-
-                # step optimizer
-                scaler.step(optimizer)
-
-                # Updates the scale for next iteration.
-                scaler.update()
-
-                if step % self.config.log_interval == 0:
-                    tepoch.set_description(
-                        f"step {step}/{max_steps} | train loss: {loss_value:.4f} |"
-                        f"train 3-pix acc: {acc_train.item():.4f} | lr: {lr:.4e}"
-                    )
-
-                # once in a while evaluate validation loss
-                if (step >= 0) & (step % self.config.eval_interval == 0):
-                    self.model.eval()
-
-                    with torch.no_grad():
-                        loss_train_mean, acc_train_mean, _, _ = self._evaluate_batches(
-                            train_eval_loader, criterion
-                        )
-                        loss_val_mean, acc_val_mean, inputs, disp_pred = (
-                            self._evaluate_batches(val_loader, criterion)
-                        )
-                        losses_train.append(loss_train_mean.item())
-                        losses_val.append(loss_val_mean.item())
-                        accs_train.append(acc_train_mean.item())
-                        accs_val.append(acc_val_mean.item())
-
-                        tepoch.set_postfix(
-                            trainloss=loss_train_mean.item(),
-                            valloss=loss_val_mean.item(),
-                            trainacc=acc_train_mean.item(),
-                            valacc=acc_val_mean.item(),
-                        )
-
-                        # save best model where loss_val[i] < loss_val[i - 1]
-                        if loss_val_mean < loss_val_prev:
-                            print(
-                                "found best model, "
-                                + f"loss_val_curr: {loss_val_mean.item():.4f} "
-                                + f"loss_val_prev: {loss_val_prev:.4f}, saving"
-                            )
-                            self.save_checkpoint(epoch, step, optimizer, best=True)
-                            loss_val_prev = loss_val_mean.item()
-
-                        ## once a while check predicted disparity on the val loader
-                        left = inputs.left.to("cpu")
-                        right = inputs.right.to("cpu")
-                        disp = inputs.disp.to("cpu")
-                        disp_pred = disp_pred.data.cpu().numpy()
-                        # normalize to (0, 255), for visualization
-                        img_left = ((left / left.max()) * 128 + 127).to(torch.uint8)
-                        img_right = ((right / right.max()) * 128 + 127).to(torch.uint8)
-
-                        # visualize
-                        figsize = (16, 10)
-                        vmin = -100
-                        vmax = 100
-                        sns.set_theme()
-                        sns.set_theme(
-                            context="paper", style="white", font_scale=2, palette="deep"
-                        )
-
-                        fig, axes = plt.subplots(
-                            nrows=left.shape[0], ncols=4, figsize=figsize
-                        )
-                        if left.shape[0] == 1:
-                            # left image
-                            axes[0].imshow(img_left[0].permute(1, 2, 0))
-                            axes[0].set_title("Left")
-
-                            # right image
-                            axes[1].imshow(img_right[0].permute(1, 2, 0))
-                            axes[1].set_title("Right")
-
-                            # predicted disparity
-                            axes[2].imshow(
-                                disp_pred[0],
-                                cmap="jet",
-                                vmin=vmin,
-                                vmax=vmax,
-                            )
-                            axes[2].set_title("Pred. disparity")
-
-                            # disparity ground truth
-                            temp = axes[3].imshow(
-                                disp[0], cmap="jet", vmin=vmin, vmax=vmax
-                            )
-                            axes[3].set_title("Ground truth")
-
-                            # colorbar
-                            l_ax, b_ax, w_ax, h_ax = axes[3].get_position().bounds
-                            cax = plt.gcf().add_axes(
-                                [l_ax + w_ax + 0.03, b_ax, 0.03, h_ax]
-                            )
-                            cbar_ticks = np.arange(vmin, vmax + 1, 50)
-                            cbar = fig.colorbar(temp, cax=cax, ticks=cbar_ticks)
-                            cbar.ax.set_yticklabels(cbar_ticks)
-                        else:
-                            for k in range(left.shape[0]):
-                                # left image
-                                axes[k, 0].imshow(img_left[k].permute(1, 2, 0))
-                                axes[k, 0].set_title("Left")
-
-                                # right image
-                                axes[k, 1].imshow(img_right[k].permute(1, 2, 0))
-                                axes[k, 1].set_title("Right")
-
-                                # predicted disparity
-                                axes[k, 2].imshow(
-                                    disp_pred[k],
-                                    cmap="jet",
-                                    vmin=vmin,
-                                    vmax=vmax,
-                                )
-                                axes[k, 2].set_title("Pred. disparity")
-
-                                # disparity ground truth
-                                temp = axes[k, 3].imshow(
-                                    disp[k], cmap="jet", vmin=vmin, vmax=vmax
-                                )
-                                axes[k, 3].set_title("Ground truth")
-
-                                # colorbar
-                                l_ax, b_ax, w_ax, h_ax = (
-                                    axes[k, 3].get_position().bounds
-                                )
-                                cax = plt.gcf().add_axes(
-                                    [l_ax + w_ax + 0.03, b_ax, 0.03, h_ax]
-                                )
-                                cbar_ticks = np.arange(vmin, vmax + 1, 50)
-                                cbar = fig.colorbar(temp, cax=cax, ticks=cbar_ticks)
-                                cbar.ax.set_yticklabels(cbar_ticks)
-
-                        # turn off axis for all subplots
-                        for ax in axes.ravel():
-                            ax.set_axis_off()
-
-                        plt.savefig(
-                            f"{self.pred_images_dir}/output_val.pdf",
-                            dpi=600,
-                            bbox_inches="tight",
-                        )
-                        plt.close()
-
-                    # train mode
-                    self.model.train()
-
-            # save model each epoch
-            self.save_checkpoint(epoch, step, optimizer)
-
-        # save train and val losses
-        np.save(f"{self.experiment_dir}/losses_train.npy", losses_train)
-        np.save(f"{self.experiment_dir}/losses_val.npy", losses_val)
-        np.save(f"{self.experiment_dir}/accs_train.npy", accs_train)
-        np.save(f"{self.experiment_dir}/accs_val.npy", accs_val)
-
-    def plotLine_learning_curve(self, save_flag):
-
-        losses_train = np.load(f"{self.experiment_dir}/losses_train.npy")
-        losses_val = np.load(f"{self.experiment_dir}/losses_val.npy")
-
-        # average losses_train every eval_interval
-        losses_train_avg = []
-        for i in range(0, len(losses_train), self.config.eval_interval):
-            i_start = i
-            i_end = i_start + self.config.eval_interval
-            losses_train_avg.append(np.mean(losses_train[i_start:i_end]))
-
-        assert len(losses_val) == len(losses_train_avg)
-
-        # start plotting
-        sns.set_theme()
-        sns.set_theme(context="paper", style="white", font_scale=2, palette="deep")
-
-        figsize = (14, 4)
-        n_row = 1
-        n_col = 1
-
-        fig, axes = plt.subplots(nrows=n_row, ncols=n_col, figsize=figsize, sharex=True)
-
-        # fig.text(0.5, 1.02, "Training loss", ha="center")
-        # fig.text(-0.01, 0.5, "L1-loss", va="center", rotation=90)
-        fig.text(0.5, -0.04, "Step x {}".format(self.config.eval_interval), ha="center")
-
-        fig.tight_layout()
-
-        plt.subplots_adjust(wspace=0.25, hspace=0.25)
-
-        axes.plot(losses_train_avg, linewidth=2)
-        axes.plot(losses_val, linewidth=2)
-
-        x_low = 0
-        x_up = len(losses_val)
-        x_step = 10
-        y_low = 0
-        y_up = 31
-        y_step = 5
-
-        axes.set_ylabel("L1-loss")
-        axes.set_xticks(np.round(np.arange(x_low, x_up, x_step), 2))
-        axes.set_xticklabels(np.round(np.arange(x_low, x_up, x_step), 2))
-        axes.set_yticks(np.round(np.arange(y_low, y_up, y_step), 2))
-        axes.set_yticklabels(np.round(np.arange(y_low, y_up, y_step), 2))
-        axes.set_ylim(y_low, y_up)
-
-        plt.legend(["train", "val"], loc="upper right")
-
-        # Hide the right and top spines
-        axes.spines["right"].set_visible(False)
-        axes.spines["top"].set_visible(False)
-
-        # Only show ticks on the left and bottom spines
-        axes.yaxis.set_ticks_position("left")
-        axes.xaxis.set_ticks_position("bottom")
-
-        if save_flag:
-            plt.savefig(
-                f"{self.experiment_dir}/learning_curve.pdf",
-                dpi=600,
-                bbox_inches="tight",
+        train_eval = make_train_eval_loader(train_loader, config)
+        self.history = {
+            name: []
+            for name in (
+                "losses_train",
+                "losses_val",
+                "accs_train",
+                "accs_val",
+                "eval_steps",
             )
+        }
+        self.best_loss = float("inf")
+        start_epoch = config.start_epoch
+        checkpoint = getattr(self, "_resume_checkpoint", None)
+        if checkpoint is not None:
+            if not checkpoint.get("epoch_complete", False):
+                raise ValueError(
+                    "Training resume requires an epoch-complete checkpoint from the new trainer; best/legacy checkpoints remain usable for inference"
+                )
+            optimizer.load_state_dict(checkpoint["optimizer"])
+            scaler.load_state_dict(checkpoint["scaler"])
+            self.history = checkpoint["history"]
+            self.best_loss = checkpoint["best_loss"]
+            start_epoch = checkpoint["epoch"] + 1
+        if not 0 <= start_epoch < config.epochs:
+            raise ValueError("start_epoch must be within the training epoch range")
+        total_steps = config.epochs * len(train_loader)
+        self._scaler = scaler
+        for epoch in range(start_epoch, config.epochs):
+            # Epoch-specific seeds allow reproducible epoch-boundary resume,
+            # including persistent workers (dataset RNG receives the epoch).
+            epoch_seed = config.seed + epoch
+            random.seed(epoch_seed)
+            np.random.seed(epoch_seed % 2**32)
+            torch.manual_seed(epoch_seed)
+            if train_loader.generator is not None:
+                train_loader.generator.manual_seed(epoch_seed)
+            sampler_generator = getattr(train_loader.sampler, "generator", None)
+            if sampler_generator is not None:
+                sampler_generator.manual_seed(epoch_seed)
+            if hasattr(train_loader.dataset, "set_epoch"):
+                train_loader.dataset.set_epoch(epoch)
+            self.model.train()
+            progress = tqdm(train_loader)
+            for idx, batch in enumerate(progress):
+                step = epoch * len(train_loader) + idx
+                inputs = self._to_device(batch)
+                optimizer.zero_grad(set_to_none=True)
+                with self._autocast():
+                    prediction = self.model(inputs)
+                loss = criterion(prediction.float(), inputs.disp.float())
+                if not torch.isfinite(loss):
+                    raise ValueError(f"Nonfinite training loss at step {step}")
+                scaler.scale(loss).backward()
+                scaler.unscale_(optimizer)
+                if config.clip_max_norm:
+                    torch.nn.utils.clip_grad_norm_(
+                        self.model.parameters(), config.clip_max_norm
+                    )
+                for group in optimizer.param_groups:
+                    group["lr"] = self.get_lr(step, total_steps)
+                scaler.step(optimizer)
+                scaler.update()
+                if step % config.log_interval == 0:
+                    progress.set_description(
+                        f"step {step}/{total_steps} loss {loss.item():.4f}"
+                    )
+                # Save actual optimizer-update count, including the final update.
+                if step % config.eval_interval == 0 or step == total_steps - 1:
+                    tr_loss, tr_acc = self._evaluate_batches(train_eval, criterion)
+                    va_loss, va_acc = self._evaluate_batches(val_loader, criterion)
+                    for name, value in zip(
+                        self.history, (tr_loss, va_loss, tr_acc, va_acc, step + 1)
+                    ):
+                        self.history[name].append(value)
+                    self._save_history()
+                    if va_loss < self.best_loss:
+                        self.best_loss = va_loss
+                        self.save_checkpoint(epoch, step, optimizer, best=True)
+            self.save_checkpoint(epoch, step, optimizer)
+        return self.history
 
-    def plotLine_learning_curve_v2(self, save_flag):
+    def _save_history(self):
+        for name, values in self.history.items():
+            np.save(Path(self.experiment_dir) / f"{name}.npy", values)
 
-        losses_train = np.load(f"{self.experiment_dir}/losses_train.npy")
-        losses_val = np.load(f"{self.experiment_dir}/losses_val.npy")
-        accs_train = np.load(f"{self.experiment_dir}/accs_train.npy")
-        accs_val = np.load(f"{self.experiment_dir}/accs_val.npy")
-
-        assert len(losses_val) == len(losses_train)
-        assert len(accs_val) == len(accs_train)
+    def plotLine_learning_curve(self, save_flag=False):
+        root = Path(self.experiment_dir)
+        losses = [np.load(root / f"losses_{split}.npy") for split in ("train", "val")]
+        accs = [np.load(root / f"accs_{split}.npy") for split in ("train", "val")]
+        path = root / "eval_steps.npy"
+        steps = (
+            np.load(path)
+            if path.exists()
+            else np.arange(len(losses[0])) * self.config.eval_interval
+        )
 
         # start plotting
         sns.set_theme()
@@ -706,58 +547,25 @@ class Engine:
 
         fig, axes = plt.subplots(nrows=n_row, ncols=n_col, figsize=figsize, sharex=True)
 
-        # fig.text(0.5, 1.02, "Training loss", ha="center")
-        # fig.text(-0.01, 0.5, "L1-loss", va="center", rotation=90)
-        fig.text(
-            0.5,
-            -0.04,
-            f"Step (averaged across {self.config.batch_size * self.config.eval_iter} trials, "
-            + f"sampled every {self.config.eval_interval} steps)",
-            ha="center",
-        )
+        for values, label in zip(losses, ("Train", "Validation")):
+            axes[0].plot(steps, values, linewidth=2, label=label)
+        for values, label in zip(accs, ("Train", "Validation")):
+            axes[1].plot(steps, values, linewidth=2, label=label)
 
-        fig.tight_layout()
-
-        plt.subplots_adjust(wspace=0.25, hspace=0.25)
-
-        axes[0].plot(losses_train, linewidth=2)
-        axes[0].plot(losses_val, linewidth=2)
-        axes[1].plot(accs_train, linewidth=2)
-        axes[1].plot(accs_val, linewidth=2)
-
-        if self.config.dataset == "sceneflow_monkaa":
-            x_low = 0
-            x_step = 25
-            x_up = len(losses_val) + x_step
-
-        elif self.config.dataset == "sceneflow_flying":
-            x_low = 0
-            x_step = 100
-            x_up = len(losses_val) + x_step
-
-        y_low = 10
-        y_up = 61
-        y_step = 10
-
-        axes[0].set_ylabel("L1-loss")
-        axes[0].set_xticks(np.round(np.arange(x_low, x_up, x_step), 2))
-        axes[0].set_xticklabels(np.round(np.arange(x_low, x_up, x_step), 2))
-        axes[0].set_yticks(np.round(np.arange(y_low, y_up, y_step), 2))
-        axes[0].set_yticklabels(np.round(np.arange(y_low, y_up, y_step), 2))
+        y_low = 0
+        y_up = 31
+        axes[0].set_ylabel(self.config.loss)
         axes[0].set_ylim(y_low, y_up)
 
-        y_low = 0.0
-        y_up = 0.61
-        y_step = 0.1
-
-        axes[1].set_ylabel("3-pix acc")
-        axes[1].set_xticks(np.round(np.arange(x_low, x_up, x_step), 2))
-        axes[1].set_xticklabels(np.round(np.arange(x_low, x_up, x_step), 2))
-        axes[1].set_yticks(np.round(np.arange(y_low, y_up, y_step), 2))
-        axes[1].set_yticklabels(np.round(np.arange(y_low, y_up, y_step), 2))
+        y_low = 0.5
+        y_up = 1.05
+        axes[1].set_ylabel(f"Accuracy (< {self.config.px_error_threshold} px)")
         axes[1].set_ylim(y_low, y_up)
-
-        plt.legend(["train", "val"], loc="lower right")
+        for ax in axes:
+            ax.set_xlabel("Optimizer updates")
+            ax.legend()
+        fig.tight_layout()
+        plt.subplots_adjust(wspace=0.25, hspace=0.25)
 
         # Hide the right and top spines
         axes[0].spines["right"].set_visible(False)
@@ -772,18 +580,13 @@ class Engine:
         axes[1].xaxis.set_ticks_position("bottom")
 
         if save_flag:
-            plt.savefig(
-                f"{self.experiment_dir}/learning_curve.pdf",
-                dpi=600,
-                bbox_inches="tight",
-            )
+            fig.savefig(root / "learning_curve.pdf", bbox_inches="tight")
+            plt.close(fig)
+        return fig
 
     def plot_learning_rate(self, train_loader, save_flag):
         # plot learning rate
-        if self.config.epochs > 10:
-            max_steps_lr = 10 * len(train_loader)
-        else:
-            max_steps_lr = self.config.epochs * len(train_loader)
+        max_steps_lr = self.config.epochs * len(train_loader)
         max_steps = self.config.epochs * len(train_loader)
         lr = np.empty(max_steps, dtype=np.float32)
         for i in range(max_steps):
@@ -793,13 +596,8 @@ class Engine:
         sns.set_theme()
         sns.set_theme(context="paper", style="white", font_scale=2, palette="deep")
 
-        plt.rcParams.update(
-            {
-                "text.usetex": True,
-                "font.family": "Helvetica",
-                # "font.sans-serif": "Helvetica",
-            }
-        )
+        plt.rcParams["font.family"] = "sans-serif"
+        plt.rcParams["font.sans-serif"] = ["Arial", "Liberation Sans", "DejaVu Sans"]
 
         figsize = (14, 4)
         n_row = 1
@@ -861,11 +659,11 @@ class Engine:
             left.to(self.config.device),
             right.to(self.config.device),
             disp.to(self.config.device),
-            ref,
+            ref.to(self.config.device),
         )
         # inference
         self.model.eval()
-        with torch.autocast(device_type=self.config.device, dtype=torch.float16):
+        with torch.no_grad(), self._autocast():
             disp_pred = self.model(input_data)
 
         # visualize output
@@ -874,9 +672,9 @@ class Engine:
         img_right = ((right / right.max()) * 128 + 127).to(torch.uint8)
 
         fig, axes = plt.subplots(
-            nrows=self.config.batch_size_val, ncols=4, figsize=(12, 5)
+            nrows=len(left), ncols=4, figsize=(12, 5), squeeze=False
         )
-        for i in range(self.config.batch_size_val):
+        for i in range(len(left)):
             # left image
             axes[i, 0].imshow(img_left[i].permute(1, 2, 0))
             axes[i, 0].set_title("Left")

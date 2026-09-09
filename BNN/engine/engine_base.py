@@ -117,7 +117,7 @@ class Engine:
         # if self.train_or_eval_mode == "train":
         # self.model.train()  # training mode
         print(
-            f"BNN was successfully loaded to {self.device}, "
+            f"BNN was successfully loaded to {self.device}\n"
             + f"Binocular interaction: {config.binocular_interaction}\n"
             + f"Seed: {config.seed}\n"
             + f"Compile mode: {config.compile_mode}\n"

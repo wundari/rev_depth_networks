@@ -15,8 +15,8 @@ class GCNetconfig:
     # learning params
     lr: float = 6e-4
     # lr_decay_rate: float = 0.99
-    max_lr: float = lr
-    min_lr: float = max_lr * 0.1
+    max_lr: float | None = None
+    min_lr: float | None = None
     warmup_steps: int = 250  # 1000
     # max_steps_lr: int = 20000  # max steps for learning rate function
 
@@ -34,7 +34,13 @@ class GCNetconfig:
     eval_num_workers: int = 2
     persistent_workers: bool = True
     prefetch_factor: int = 2
+    loader_timeout: int = 120
     log_interval: int = 20
+    amp_dtype: str = "bfloat16"  # "float16" or "float32" also supported
+    deterministic: bool = True
+    split_seed: int = 42  # fixed across all model seeds/interactions
+    validation_fraction: float = 0.1
+    test_fraction: float = 0.1
     weight_decay: float = 1e-4
     start_epoch: int = 0
     if dataset == "sceneflow_monkaa":
@@ -44,9 +50,13 @@ class GCNetconfig:
     eval_interval: int = 100  # interval for calculating validation error
     eval_iter: int = 200  # the number of iterations for validation
     clip_max_norm: float = 0.1  # gradient clipping max norm
-    device = "cuda" if torch.cuda.is_available() else "mps"
-    compile_mode: str = "reduce-overhead"  # "reduce-overhead", "max-autotune"
-    seed: int = 1618
+    device: str = (
+        "cuda"
+        if torch.cuda.is_available()
+        else ("mps" if torch.backends.mps.is_available() else "cpu")
+    )
+    compile_mode: str | None = "max-autotune"  # "reduce-overhead", "max-autotune"
+    seed: int = 11364
     loss: str = "smooth_l1"
 
     # GCNet
@@ -66,13 +76,15 @@ class GCNetconfig:
     validation_max_disp: int = -1
 
     # resume from checkpoint
-    load_state = False
+    load_state: bool = True
     if load_state:
         compile_mode = None
-    experiment_id = 49  # experiment id for loading pretrained DNN
+    experiment_id: int = 6  # experiment id for loading pretrained DNN
     epoch_to_load = 8
-    iter_to_load = 18100
-    resume = f"epoch_{epoch_to_load}_iter_{iter_to_load}_model_best.pth.tar"  # pretrained file name, e.g: epoch_1_model.pth.tar
+    iter_to_load = 15600
+    resume: str = (
+        f"epoch_{epoch_to_load}_iter_{iter_to_load}_model_best.pth.tar"  # pretrained file name, e.g: epoch_1_model.pth.tar
+    )
     # resume = f"epoch_{epoch_to_load}_model.pth.tar"
 
     # rds analysis
@@ -207,3 +219,11 @@ class GCNetconfig:
     #         (9, 5200),  # seed 94750
     #     ]
     # )
+
+    def __post_init__(self):
+        if self.max_lr is None:
+            self.max_lr = self.lr
+        if self.min_lr is None:
+            self.min_lr = self.max_lr * 0.1
+        if not 0 <= self.min_lr <= self.max_lr or self.max_lr <= 0:
+            raise ValueError("Require 0 <= min_lr <= max_lr and max_lr > 0")

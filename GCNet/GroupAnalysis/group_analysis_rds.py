@@ -30,8 +30,32 @@ from scipy.stats import sem
 # reproducibility
 import random
 
-
 # %%
+
+
+class NormalizeRDS:
+    """Normalize signed [-1,1] RGB arrays; no uint8 ToTensor ambiguity/lambda."""
+
+    # mean = (0.485 * 255.0, 0.456 * 255.0, 0.406 * 255.0)
+    # std = (0.229 * 255.0, 0.224 * 255.0, 0.225 * 255.0)
+    # mean = (0.485, 0.456, 0.406)
+    # std = (0.229, 0.224, 0.225)
+    # mean = np.array([0.5, 0.5, 0.5])
+    # std = np.array([0.5, 0.5, 0.5])
+
+    _mean = torch.tensor([0.485, 0.456, 0.406])[:, None, None]
+    _std = torch.tensor([0.229, 0.224, 0.225])[:, None, None]
+
+    def __call__(self, image):
+        x = torch.as_tensor(np.ascontiguousarray(image), dtype=torch.float32).permute(
+            2, 0, 1
+        )
+        if not torch.isfinite(x).all() or x.min() < -1 or x.max() > 1:
+            raise ValueError("RDS pixels must be finite in [-1,1]")
+
+        return ((x + 1) / 2 - self._mean) / self._std
+
+
 class GA_RDS:
 
     def __init__(self, config: GCNetconfig, params_rds: dict) -> None:
@@ -62,22 +86,7 @@ class GA_RDS:
         ]  # disparity magnitude (near, far).
 
         # transform rds to tensor and in range [0, 1]
-        # self.transform_data = transforms.Compose(
-        #     [transforms.ToTensor(), transforms.Lambda(lambda t: (t + 1.0) / 2.0)]
-        # )
-        # mean = (0.485 * 255.0, 0.456 * 255.0, 0.406 * 255.0)
-        # std = (0.229 * 255.0, 0.224 * 255.0, 0.225 * 255.0)
-        mean = (0.485, 0.456, 0.406)
-        std = (0.229, 0.224, 0.225)
-        # mean = np.array([0.5, 0.5, 0.5])
-        # std = np.array([0.5, 0.5, 0.5])
-        self.transform_data = transforms.Compose(
-            [
-                transforms.ToTensor(),
-                transforms.Lambda(lambda t: (t + 1.0) / 2.0),
-                transforms.Normalize(mean, std),
-            ]
-        )
+        self.transform_data = NormalizeRDS()
 
         # set the experiment directory
         self.experiment_dir = (
@@ -118,12 +127,12 @@ class GA_RDS:
 
         print(
             "Network config\n"
-            + f"binocular interaction: {self.config.binocular_interaction}\n"
-            + f"seed: {self.config.seed}\n"
-            + f"epoch: {self.config.epoch_to_load}\n"
-            + f"iter: {self.config.iter_to_load}\n"
-            + f"experiment_dir: {self.experiment_dir}\n"
-            + f"rds_dir: {self.rds_dir}\n"
+            + f"Binocular interaction: {self.config.binocular_interaction}\n"
+            + f"Seed: {self.config.seed}\n"
+            + f"Epoch: {self.config.epoch_to_load}\n"
+            + f"Iter: {self.config.iter_to_load}\n"
+            + f"Experiment_dir: {self.experiment_dir}\n"
+            + f"RDS_dir: {self.rds_dir}\n"
             + f"xDecode_dir: {self.xDecode_dir}\n"
         )
 
@@ -189,12 +198,12 @@ class GA_RDS:
 
         print(
             "Updating network config\n"
-            + f"binocular interaction: {interaction_old} => {self.config.binocular_interaction}\n"
-            + f"seed: {seed_old} => {self.config.seed}\n"
-            + f"epoch: {epoch_old} => {self.config.epoch_to_load}\n"
-            + f"iter: {iter_old} => {self.config.iter_to_load}\n"
-            + f"experiment_dir: {self.experiment_dir}\n"
-            + f"rds_dir: {self.rds_dir}\n"
+            + f"Binocular interaction: {interaction_old} => {self.config.binocular_interaction}\n"
+            + f"Seed: {seed_old} => {self.config.seed}\n"
+            + f"Epoch: {epoch_old} => {self.config.epoch_to_load}\n"
+            + f"Iter: {iter_old} => {self.config.iter_to_load}\n"
+            + f"Experiment_dir: {self.experiment_dir}\n"
+            + f"RDS_dir: {self.rds_dir}\n"
             + f"xDecode_dir: {self.xDecode_dir}\n"
         )
 
@@ -308,7 +317,7 @@ class GA_RDS:
             shuffle=False,
             pin_memory=True,
             drop_last=True,
-            num_workers=2,
+            num_workers=4,
             worker_init_fn=seed_worker,
             generator=g,
         )
@@ -337,24 +346,16 @@ class GA_RDS:
             #     ),
             #     ref=ref.pin_memory().to(self.config.device, non_blocking=True),
             # )
-            if ref.mean() > 0:
+            if ref.mean() >= 0:
                 input_data = NestedTensor(
-                    left=inputs_left.pin_memory().to(
-                        self.config.device, non_blocking=True
-                    ),
-                    right=inputs_right.pin_memory().to(
-                        self.config.device, non_blocking=True
-                    ),
+                    left=inputs_left.to(self.config.device, non_blocking=True),
+                    right=inputs_right.to(self.config.device, non_blocking=True),
                     ref=ref.pin_memory().to(self.config.device, non_blocking=True),
                 )
             else:
                 input_data = NestedTensor(
-                    left=inputs_right.pin_memory().to(
-                        self.config.device, non_blocking=True
-                    ),
-                    right=inputs_left.pin_memory().to(
-                        self.config.device, non_blocking=True
-                    ),
+                    left=inputs_right.to(self.config.device, non_blocking=True),
+                    right=inputs_left.to(self.config.device, non_blocking=True),
                     ref=ref.pin_memory().to(self.config.device, non_blocking=True),
                 )
 

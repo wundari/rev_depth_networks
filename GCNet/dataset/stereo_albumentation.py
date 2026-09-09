@@ -85,12 +85,13 @@ def horizontal_flip(
 
 
 def random_crop(min_crop_height, min_crop_width, input_data, c_disp_shift, split,
-                reference=None):
+                reference=None, rng=None):
     """Uniform valid stereo crop, with the original signed disparity convention.
 
     ``reference`` optionally selects the eye before loading its PFM file.
-    Validation retains the original stochastic crop/reference policy.
+    A local RNG allows repeatable evaluation without changing training randomness.
     """
+    rng = random if rng is None else rng
     h, w = input_data["left"].shape[:2]
     ch, cw = min_crop_height, min_crop_width
     if input_data["right"].shape[:2] != (h, w):
@@ -98,7 +99,7 @@ def random_crop(min_crop_height, min_crop_width, input_data, c_disp_shift, split
     if ch <= 0 or cw <= 0 or ch > h or cw > w:
         raise ValueError("Crop must be positive and fit inside the source image")
     if reference is None:
-        reference = 1 if random.random() <= 0.5 else -1
+        reference = 1 if rng.random() <= 0.5 else -1
     if reference not in (1, -1):
         raise ValueError("reference must be 1 or -1")
     shift = c_disp_shift * 44.0
@@ -109,8 +110,8 @@ def random_crop(min_crop_height, min_crop_width, input_data, c_disp_shift, split
     low, high = max(0, delta), min(w - cw, w - cw + delta)
     if low > high:
         raise ValueError("No valid stereo crop for this width and disparity shift")
-    x = random.randint(low, high)
-    y = random.randint(0, h - ch)
+    x = rng.randint(low, high)
+    y = rng.randint(0, h - ch)
     source = input_data["disp"] if reference == 1 else input_data["disp_right"]
     if source.shape != (h, w):
         raise ValueError("Selected disparity map must match the source image")
@@ -119,7 +120,7 @@ def random_crop(min_crop_height, min_crop_width, input_data, c_disp_shift, split
     input_data["left"] = crop(anchor, x, y, x + cw, y + ch)
     input_data["right"] = crop(other, x - delta, y, x - delta + cw, y + ch)
     # Keep the original full-image width as the clipping bound.
-    shifted = crop(source, x, y, x + cw, y + ch) - shift
+    shifted = crop(source, x, y, x + cw, y + ch) - offset
     input_data["disp"] = np.minimum(shifted, w)
     input_data["ref"] = reference
     return input_data
@@ -154,7 +155,7 @@ Base
 
 
 class StereoTransform(BasicTransform):
-    """Albumentations 2.x adapter for BNN's left/right dictionary targets.
+    """Albumentations 2.x adapter for GCNet's left/right dictionary targets.
 
     Disparities, occlusion masks and reference signs are passed through.
     ``always_apply`` is a compatibility alias for existing callers only.
@@ -168,7 +169,7 @@ class StereoTransform(BasicTransform):
         return {"left": self.apply, "right": self.apply}
 
     def update_transform_params(self, params, data):
-        # BasicTransform 2.x otherwise looks for image/images, which BNN
+        # BasicTransform 2.x otherwise looks for image/images, which GCNet
         # does not supply. Delegate using a temporary shape reference.
         image = data["left"] if "left" in self.targets else data["right"]
         return super().update_transform_params(params, {"image": image})
@@ -520,3 +521,14 @@ class RandomShiftRotate(RightOnlyTransform):
         return cv2.warpAffine(
             img, matrix, (w, h), cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE
         )
+
+
+def aligned_random_crop(height, width, input_data, split):
+    """Crop all matching spatial arrays together, without stereo eye swapping."""
+    if split != "train":
+        return input_data
+    h, w = input_data["left"].shape[:2]
+    x1, y1, x2, y2 = get_random_crop_coords(h, w, height, width)
+    return {key: crop(value, x1, y1, x2, y2)
+            if isinstance(value, np.ndarray) and value.shape[:2] == (h, w) else value
+            for key, value in input_data.items()}
