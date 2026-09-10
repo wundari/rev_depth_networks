@@ -1,5 +1,6 @@
 # %%
 import torch
+import numpy as np
 
 # from typing import List
 from dataclasses import dataclass, field
@@ -76,7 +77,7 @@ class Config:
         default_factory=lambda: ["default", "bem", "cmm", "sum_diff"]
     )
 
-    # rds analysis
+    # list of seed numbers for reproducibility
     seed_to_analyse: list[int] = field(
         default_factory=lambda: [
             1618,
@@ -94,3 +95,20 @@ class Config:
             94750,
         ]
     )
+
+    # rds parameters
+    target_disp: int = 10  # RDS target disparity (pix) to be analyzed
+    n_rds_each_disp: int = 128  # n_rds for each disparity magnitude in disp_ct_pix
+    dotDens_list: list[float] = field(
+        default_factory=lambda: np.round(0.1 * np.arange(1, 10)).tolist()
+    )  # dot densities for in-silico analysis
+    rds_type: list[str] = field(
+        default_factory=lambda: ["ards", "hmrds", "crds"]
+    )  # ards: 0, crds: 1, hmrds: 0.5, urds: -1
+    dotMatch_list: list[float] = field(
+        default_factory=lambda: [0.0, 0.5, 1.0]
+    )  # dot match
+    background_flag: bool = True  # 1: with cRDS background
+    pedestal_flag: bool = False  # 1: use pedestal to ensure rds disparity > 0
+    batch_size_rds: int = 8
+    n_bootstrap: int = 1000  # number of bootstrap samples for cross-decoding analysis

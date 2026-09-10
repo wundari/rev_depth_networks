@@ -112,7 +112,7 @@ class GCNet(nn.Module):
         return disp_pred
 
 
-def build_gcnet(config):
+def build_gcnet(config) -> GCNet:
     return GCNet(config)
 
 

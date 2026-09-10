@@ -723,12 +723,12 @@ class EngineBase:
         axes[1].plot(steps, accs_train, linewidth=2, label="Train")
         axes[1].plot(steps, accs_val, linewidth=2, label="Validation")
 
-        if self.model_name == "BNN":
-            y_low = 10
-            y_up = 51
-        else:  # GC_Net
-            y_low = 0
-            y_up = 31
+        # if self.model_name == "BNN":
+        #     y_low = 10
+        #     y_up = 51
+        # else:  # GC_Net
+        y_low = 0
+        y_up = 31
         y_step = 5
 
         axes[0].set_ylabel(self.config.loss)
@@ -736,18 +736,20 @@ class EngineBase:
         axes[0].set_yticklabels(np.round(np.arange(y_low, y_up, y_step), 2))
         axes[0].set_ylim(y_low, y_up)
 
-        if self.model_name == "BNN":
-            y_low = 0.0
-            y_up = 0.61
-        else:  # GC_Net
-            y_low = 0.5
-            y_up = 1.05
+        # if self.model_name == "BNN":
+        #     y_low = 0.2
+        #     y_up = 0.1
+        # else:  # GC_Net
+        y_low = 0.4
+        y_up = 1.05
         y_step = 0.1
 
         axes[1].set_ylabel("3-pix acc")
         axes[1].set_yticks(np.round(np.arange(y_low, y_up, y_step), 2))
         axes[1].set_yticklabels(np.round(np.arange(y_low, y_up, y_step), 2))
         axes[1].set_ylim(y_low, y_up)
+
+        plt.legend(["Train", "Validation"], loc="lower right")
 
         # Hide the right and top spines
         axes[0].spines["right"].set_visible(False)

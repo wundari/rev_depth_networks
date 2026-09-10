@@ -4,7 +4,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from GC_Net.RDS.RDS_v3 import RDS
+from RDS.RDS_v3 import RDS
 
 # reproducibility
 import random

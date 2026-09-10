@@ -1,7 +1,8 @@
 # %% load necessary modules
 import torch
-from torch.utils.data import DataLoader
 from torch import nn
+from torch.utils.data import DataLoader
+
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -12,10 +13,13 @@ import os
 import glob
 from pathlib import Path
 
-from engine.engine_gcnet import EngineGCNet
-from GC_Net.RDS.DataHandler_RDS import RDS_Handler, DatasetRDS
-from GC_Net.SVM.svm_analysis_v4 import *
-
+from engine.engine_base import EngineBase
+from RDS.DataHandler_RDS import RDS_Handler, DatasetRDS
+from SVM.svm_analysis import *
+from BNN.modules.bnn import build_bnn
+from GC_Net.modules.gcnet import build_gcnet
+from config.config_bnn import ConfigBNN
+from config.config_gcnet import ConfigGCNet
 from utilities.misc import NestedTensor
 from utilities.output_hook import ModuleOutputsHook
 
@@ -44,44 +48,37 @@ class NormalizeRDS:
         return ((x + 1) / 2 - self._mean) / self._std
 
 
-class RDSAnalysis(EngineGCNet):
+class RDSAnalysis(EngineBase):
 
-    def __init__(self, config, params_rds: dict) -> None:
+    def __init__(self, config: ConfigBNN | ConfigGCNet) -> None:
 
         super().__init__(config)
 
-        if not config.load_state:
-            raise ValueError(
-                "Set config.load_state=True to analyze a trained checkpoint; random-model controls require allow_random_model=True"
-            )
-        if config.compile_mode is not None:
-            raise ValueError("Use compile_mode=None for RDS analysis and layer hooks")
-
         # rds parameters
-        self.params_rds = params_rds
-        self.h_bg = 256  # rds height
-        self.w_bg = 512  # rds width
+        self.h_bg = config.img_height  # rds height
+        self.w_bg = config.img_width  # rds width
+        self.rds_type = config.rds_type  # ards: 0, crds: 1, hmrds: 0.5, urds: -1
+        self.batch_size_rds = config.batch_size_rds
+        self.n_rds_each_disp = (
+            config.n_rds_each_disp
+        )  # n_rds for each disparity magnitude in disp_ct_pix
+        self.dotDens_list = config.dotDens_list  # dot densities for in-silico analysis
+        self.dotMatch_list = config.dotMatch_list  # dot match
+        self.background_flag = config.background_flag  # 1: with cRDS background
+        self.pedestal_flag = (
+            config.pedestal_flag
+        )  # 1: use pedestal to ensure rds disparity > 0
+        self.n_bootstrap = (
+            config.n_bootstrap
+        )  # number of bootstrap samples for cross-decoding analysis
 
-        self.rds_type = params_rds["rds_type"]
-        self.batch_size = params_rds["batch_size_rds"]
-        self.n_rds_each_disp = params_rds["n_rds_each_disp"]
-        self.dotDens_list = params_rds["dotDens_list"]
-        self.dotMatch_list = params_rds["dotMatch_list"]
-        self.background_flag = params_rds["background_flag"]
-        self.target_disp = params_rds["target_disp"]
-        self.pedestal_flag = params_rds["pedestal_flag"]
+        self.target_disp = (
+            config.target_disp
+        )  # RDS target disparity (pix) to be analyzed
         self.disp_ct_pix_list = [
             self.target_disp,
             -self.target_disp,
         ]  # disparity magnitude (near, far).
-        self.n_bootstrap = params_rds["n_bootstrap"]
-
-        # check if n_rds is divisible by batch_size_rds
-        n_total = len(self.disp_ct_pix_list) * self.n_rds_each_disp
-        assert n_total % self.batch_size == 0, (
-            f"batch_size={self.batch_size} must evenly divide n_total={n_total} "
-            "when drop_last=True, or samples will be silently dropped."
-        )
 
         # transform rds to tensor and in range [0, 1]
         self.transform_data = NormalizeRDS()
@@ -102,27 +99,28 @@ class RDSAnalysis(EngineGCNet):
         if not os.path.exists(self.xDecode_dir):
             os.mkdir(self.xDecode_dir)
 
-        self.target_list = [
-            self.model.decoder.layer19[0],
-            self.model.decoder.layer20[0],
-            self.model.decoder.layer21[0],
-            self.model.decoder.layer22[0],
-            self.model.decoder.layer23[0],
-            self.model.decoder.layer24[0],
-            self.model.decoder.layer25[0],
-            self.model.decoder.layer26[0],
-            self.model.decoder.layer27[0],
-            self.model.decoder.layer28[0],
-            self.model.decoder.layer29[0],
-            self.model.decoder.layer30[0],
-            self.model.decoder.layer31[0],
-            self.model.decoder.layer32[0],
-            self.model.decoder.layer33a[0],
-            self.model.decoder.layer34a[0],
-            self.model.decoder.layer35a[0],
-            self.model.decoder.layer36a[0],
-            self.model.decoder.layer37,
-        ]
+        if self.model_name == "GC_Net":
+            self.target_list = [
+                self.model.decoder.layer19[0],
+                self.model.decoder.layer20[0],
+                self.model.decoder.layer21[0],
+                self.model.decoder.layer22[0],
+                self.model.decoder.layer23[0],
+                self.model.decoder.layer24[0],
+                self.model.decoder.layer25[0],
+                self.model.decoder.layer26[0],
+                self.model.decoder.layer27[0],
+                self.model.decoder.layer28[0],
+                self.model.decoder.layer29[0],
+                self.model.decoder.layer30[0],
+                self.model.decoder.layer31[0],
+                self.model.decoder.layer32[0],
+                self.model.decoder.layer33a[0],
+                self.model.decoder.layer34a[0],
+                self.model.decoder.layer35a[0],
+                self.model.decoder.layer36a[0],
+                self.model.decoder.layer37,
+            ]
 
     @torch.no_grad()
     def compute_layer_activations(
@@ -142,7 +140,6 @@ class RDSAnalysis(EngineGCNet):
                 - target = model.layer35a[0] # the convolutional output
                 - target = [model.layer35a]
                 - target = [model.layer19, model.layer20, ...] # many layers
-
 
         Returns:
             module_outputs (list): a list containing the target layer
@@ -169,6 +166,12 @@ class RDSAnalysis(EngineGCNet):
             hook.remove_hooks()
             for module, mode in modes.items():
                 module.training = mode
+
+    def _build_model(self, config: ConfigBNN | ConfigGCNet):
+        if config.model_name == "BNN":
+            return build_bnn(config)
+        elif config.model_name == "GC_Net":
+            return build_gcnet(config)
 
     @torch.no_grad()
     def compute_disp_map_rds(self, dotMatch, dotDens, background_flag, pedestal_flag):
@@ -215,11 +218,12 @@ class RDSAnalysis(EngineGCNet):
         )
         rds_loader = DataLoader(
             rds_data,
-            batch_size=self.batch_size,
+            batch_size=self.batch_size_rds,
             shuffle=False,
             pin_memory=True,
             drop_last=True,
-            num_workers=0,
+            num_workers=4,
+            prefetch_factor=2,
         )
 
         pred_disp = torch.empty(
@@ -234,22 +238,21 @@ class RDSAnalysis(EngineGCNet):
         self.model.eval()
         tepoch = tqdm(rds_loader)
         for i, (inputs_left, inputs_right, disps) in enumerate(tepoch):
-
-            # inputs_left, inputs_right, disps = next(iter(rds_loader))
+            # for i in range(len(rds_loader)):
+            # (inputs_left, inputs_right, disps) = next(iter(rds_loader))
 
             # generate disparity direction
             ref = disps / 10.0
-            # ref = torch.ones(len(disps))
 
             # build nested tensor
             # input_data = NestedTensor(
-            #     left=inputs_left.pin_memory().to(self.config.device, non_blocking=True),
-            #     right=inputs_right.pin_memory().to(
+            #     left=inputs_left.to(self.config.device, non_blocking=True),
+            #     right=inputs_right.to(
             #         self.config.device, non_blocking=True
             #     ),
             #     ref=ref.pin_memory().to(self.config.device, non_blocking=True),
             # )
-            if ref.mean() >= 0:
+            if ref.mean() > 0:
                 input_data = NestedTensor(
                     left=inputs_left.to(self.config.device, non_blocking=True),
                     right=inputs_right.to(self.config.device, non_blocking=True),
@@ -264,28 +267,12 @@ class RDSAnalysis(EngineGCNet):
 
             # model output
             with torch.autocast(device_type=self.config.device, dtype=torch.bfloat16):
-                disp_pred = self.model(input_data)  # [batch, h, w]
-                # module_outputs = self.compute_layer_activations(
-                #     input_data, self.target_list
-                # )
-                # layer = self.target_list[-1]
-                # # [batch, feat_channel, disp_channel, h, w] => [batch, disp_channel, h, w]
-                # disp_pred = module_outputs[layer].mean(dim=1)
-                # disp_pred = F.softmax(-disp_pred, dim=1)  # [batch, disp_channel, h, w]
-                # # disp_pred = torch.sum(
-                # #     disp_pred * self.model.disp_indices, dim=1
-                # # )  # [batch, h, w]
-                # disp_pred = torch.sum(
-                #     disp_pred
-                #     * self.model.disp_indices
-                #     * input_data.ref.view(-1, 1, 1, 1),
-                #     dim=1,
-                # )
+                disp_pred = self.model(input_data)
 
-            id_start = i * self.batch_size
-            id_end = id_start + self.batch_size
+            id_start = i * self.batch_size_rds
+            id_end = id_start + self.batch_size_rds
             pred_disp_labels[id_start:id_end] = disps
-            pred_disp[id_start:id_end] = disp_pred.detach().float().cpu()
+            pred_disp[id_start:id_end] = disp_pred
 
             tepoch.set_description(
                 f"RDS dotMatch: {dotMatch:.2f}, "
@@ -295,9 +282,7 @@ class RDSAnalysis(EngineGCNet):
 
         return pred_disp, pred_disp_labels
 
-    def compute_disp_map_rds_group(
-        self, dotDens_list: list, background_flag: bool, pedestal_flag: bool
-    ) -> None:
+    def compute_disp_map_rds_group(self, dotDens_list, background_flag, pedestal_flag):
         """
         generate disparity map for rds for each dot density in dotDens_list
 
@@ -329,7 +314,7 @@ class RDSAnalysis(EngineGCNet):
 
             np.save(
                 f"{self.xDecode_dir}/pred_disp_{self.rds_type[dm]}.npy",
-                pred_disp.cpu().detach().numpy(),
+                pred_disp.numpy(),
             )
             np.save(
                 f"{self.xDecode_dir}/pred_disp_labels_{self.rds_type[dm]}.npy",
@@ -338,9 +323,7 @@ class RDSAnalysis(EngineGCNet):
 
         # return pred_disp, pred_disp_labels
 
-    def xDecode(
-        self, dotDens_list: list, n_bootstrap: int, background_flag: bool
-    ) -> None:
+    def xDecode(self, dotDens_list: list, n_bootstrap: int, background_flag: bool):
         """
         Perform cross-decoding: cRDS vs aRDS and cRDS vs hmRDS.
 
@@ -357,19 +340,18 @@ class RDSAnalysis(EngineGCNet):
         X_train, Y_train, x_mean, x_std = load_train_data(
             self.xDecode_dir, background_flag
         )
-        # X_train, Y_train, x_mean, x_std = load_train_data(rdsa.xDecode_dir, rdsa.background_flag)
+        # X_train, Y_train, x_mean, x_std = load_train_data(rdsa.svm_dir, background_flag)
 
         # build test dataset
         X_ards, Y_ards, X_hmrds, Y_hmrds = load_test_data(
             self.xDecode_dir, x_mean, x_std, background_flag
         )
         # X_ards, Y_ards, X_hmrds, Y_hmrds = load_test_data(
-        #     rdsa.xDecode_dir, x_mean, x_std, rdsa.background_flag
+        #     rdsa.svm_dir, x_mean, x_std, background_flag
         # )
 
         # classifying rds with SVM
         split_train_ratio = 0.8
-        # n_bootstrap = 50  # 1000
         (
             score_ards_bootstrap,  # [n_bootstrap, len(dotDens_list)]
             predict_ards_bootstrap,
@@ -445,7 +427,6 @@ class RDSAnalysis(EngineGCNet):
         fig.text(0.5, -0.04, "Dot correlation", ha="center")
 
         fig.tight_layout()
-
         plt.subplots_adjust(wspace=0.2, hspace=0.3)
 
         score_ards_mean = score_ards_bootstrap.mean(axis=0)[dotDens_idx]
@@ -533,7 +514,6 @@ class RDSAnalysis(EngineGCNet):
         fig.text(0.5, -0.04, "Dot density", ha="center")
 
         fig.tight_layout()
-
         plt.subplots_adjust(wspace=0.2, hspace=0.3)
 
         score_ards_mean = score_ards_bootstrap.mean(axis=0)

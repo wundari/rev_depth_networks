@@ -6,17 +6,16 @@ working directory: gc-net_v2
 
 # %% load necessary modules
 import torch
-import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
 
-from config.config import ConfigGCNet
+from config.config_gcnet import ConfigGCNet
 
 # from engine.engine_base import Engine
 from modules.gcnet import build_gcnet
 
 # from RDS_analysis.rds_analysis import RDSAnalysis
 from RDS.DataHandler_RDS import RDS_Handler, DatasetRDS
-from SVM.svm_analysis_v4 import load_train_data, load_test_data, xDecode_bootstrap
+from SVM.svm_analysis import load_train_data, load_test_data, xDecode_bootstrap
 from utilities.misc import NestedTensor
 
 import gc

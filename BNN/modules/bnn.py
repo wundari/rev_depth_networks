@@ -76,5 +76,5 @@ class BNN(nn.Module):
         return out
 
 
-def build_bnn(config):
+def build_bnn(config) -> BNN:
     return BNN(config)
