@@ -1,11 +1,11 @@
 # %% load necessary modules
-from config.config import BNNconfig
+from config.config import ConfigBNN
 from GroupAnalysis.group_analysis_monosemanticity import GA_Monosemanticity
 
 import numpy as np
 
 # %%
-config = BNNconfig()
+config = ConfigBNN()
 # rds parameters
 params_rds = {
     "target_disp": 10,  # RDS target disparity (pix) to be analyzed

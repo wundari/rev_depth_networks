@@ -2,8 +2,8 @@
 import torch
 from torch import nn
 
-from modules.stereo_encoder import build_feat_extractor
-from modules.stereo_decoder import build_decoder
+from BNN.modules.stereo_encoder import build_feat_extractor
+from BNN.modules.stereo_decoder import build_decoder
 
 from utilities.misc import NestedTensor
 

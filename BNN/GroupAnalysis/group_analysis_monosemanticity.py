@@ -17,7 +17,7 @@ from scipy.stats import sem
 from GroupAnalysis.group_analysis import GA
 
 # from modules.bnn import build_bnn
-from config.config import BNNconfig
+from config.config import ConfigBNN
 from RDS.DataHandler_RDS import RDS_Handler, DatasetRDS
 from utilities.misc import NestedTensor
 
@@ -28,7 +28,7 @@ import os
 # %%
 class GA_Monosemanticity(GA):
 
-    def __init__(self, config: BNNconfig, params_rds: dict):
+    def __init__(self, config: ConfigBNN, params_rds: dict):
 
         super().__init__(config, params_rds)
 

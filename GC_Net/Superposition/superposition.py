@@ -7,11 +7,8 @@ from torch.utils.data import DataLoader
 from torchvision.transforms import transforms
 
 from engine.engine_base import EngineBase
-from config.config import ConfigBNN
-from RDS.DataHandler_RDS import RDS_Handler, DatasetRDS
-from utilities.misc import NestedTensor
+from config.config import ConfigGCNet
 
-import pandas as pd
 import numpy as np
 from jaxtyping import Float
 import os
@@ -21,19 +18,20 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 from scipy.stats import sem
-import pingouin as pg
-from statsmodels.stats.multicomp import pairwise_tukeyhsd
+
+from RDS.DataHandler_RDS import RDS_Handler, DatasetRDS
+from utilities.misc import NestedTensor
 
 
 # %%
 class SuperpositionAnalysis(EngineBase):
 
-    def __init__(self, config: ConfigBNN, params_rds: dict):
+    def __init__(self, config: ConfigGCNet, params_rds: dict):
         super().__init__(config)
 
         self.config = config
 
-        # folders for superposition analysis
+        # folders for superosition analysis
         self.superposition_dir = (
             f"{self.save_dir}/"
             + f"experiment_{self.config.experiment_id}/"
@@ -44,18 +42,48 @@ class SuperpositionAnalysis(EngineBase):
             os.makedirs(self.superposition_dir)
 
         self.layer_name = [
-            "encoder.in_conv",
-            "encoder.layer2",
-            "decoder.layer3",
-            "decoder.layer4",
+            "layer19",
+            "layer20",
+            "layer21",
+            "layer22",
+            "layer23",
+            "layer24",
+            "layer25",
+            "layer26",
+            "layer27",
+            "layer28",
+            "layer29",
+            "layer30",
+            "layer31",
+            "layer32",
+            "layer33a",
+            "layer34a",
+            "layer35a",
+            "layer36a",
+            "layer37",
         ]
 
-        # target_layer = sa.model.encoder.in_conv[0]
+        # target_layer, only convolutional layers
         self.target_layer = [
-            self.model.encoder.in_conv[0],
-            self.model.encoder.layer2[0],
-            self.model.decoder.layer3[0],
-            self.model.decoder.layer4,
+            self.model.decoder.layer19[0],
+            self.model.decoder.layer20[0],
+            self.model.decoder.layer21[0],
+            self.model.decoder.layer22[0],
+            self.model.decoder.layer23[0],
+            self.model.decoder.layer24[0],
+            self.model.decoder.layer25[0],
+            self.model.decoder.layer26[0],
+            self.model.decoder.layer27[0],
+            self.model.decoder.layer28[0],
+            self.model.decoder.layer29[0],
+            self.model.decoder.layer30[0],
+            self.model.decoder.layer31[0],
+            self.model.decoder.layer32[0],
+            self.model.decoder.layer33a[0],
+            self.model.decoder.layer34a[0],
+            self.model.decoder.layer35a[0],
+            self.model.decoder.layer36a[0],
+            self.model.decoder.layer37,
         ]
 
         # rds parameters
@@ -81,13 +109,7 @@ class SuperpositionAnalysis(EngineBase):
 
         self.device = config.device
 
-    def get_conv_names_and_weights(self) -> tuple[list[Tensor], list[Tensor]]:
-        """
-        Get the names and weights of convolutional layers in the model.
-        Returns:
-            conv_layer_names (list): List of names of convolutional layers.
-            conv_layer_weights (list): List of weights of convolutional layers.
-        """
+    def get_conv_names_and_weights(self) -> list[Tensor]:
 
         names = []
         params = []
@@ -95,10 +117,10 @@ class SuperpositionAnalysis(EngineBase):
             names.append(name)
             params.append(param)
 
-        # get index for convolutional layers, excepth the last one
+        # get index for convolutional layers
         layer_idx = []
-        for i in range(len(names)):  # gather the first 3 conv layers in [names]
-            if ".0.weight" in names[i] or "layer4.weight" in names[i]:
+        for i in range(len(names)):
+            if ".0.weight" in names[i] or "layer18.weight" in names[i]:
                 layer_idx.append(i)
 
         # get convolutional layer names and weights
@@ -110,7 +132,7 @@ class SuperpositionAnalysis(EngineBase):
 
         return (conv_layer_names, conv_layer_weights)
 
-    def compute_superposition_index(self, w: Float[Tensor, "n_neuron n_feat"]):
+    def compute_superposition_index(self, w: Float[Tensor, "n_hidden n_feat"]):
         """
         Compute representation strength and superposition index.
 
@@ -118,7 +140,6 @@ class SuperpositionAnalysis(EngineBase):
 
                 ||Wi|| = sqrt(sum(Wi^2))
                 where Wi is the i-th feature vector.
-
         Superposition index: how much a feature shares its dimension
                 with other features.
 
@@ -127,25 +148,21 @@ class SuperpositionAnalysis(EngineBase):
                 that the feature W_i is orthogonal to all other features (W_i is then
                 nearly monosemantic).
                 On the other hand, if the sum of projection >=1, it means that
-                the feature W_i can also activate other group of features
-                (superposition takes place, thus W_i is polysemantic).
+                the feature W_i can also activate other group of features (superposition
+                takes place, thus W_i is polysemantic).
 
                 sum(Wi^2) / (||Wi||^2 + tol)
                 where tol is a small value to avoid division by zero.
 
         input args:
-            w <torch.Tensor, [n_neuron, n_feat]: weight matrix after spatial
-                averaging (average across the width and height).
+            w <torch.Tensor, [n_hidden, n_feat]: weight matrix after spatial averaging.
 
                 the original weight matrix is of shape [C_out, C_in, h, w]
-                (for 2D convolution) or [C_out, C_in, d, h, w] for
-                3D convolution.
+                (for 2D convolution) or [C_out, C_in, d, h, w] for 3D convolution.
 
-                the input dimension (C_in) is associated with the number of
-                features (n_feat)
-                and the layer dimension (C_out) is associated with the number
-                of neurons (n_neuron).
-                Thus, the dimension becomes [n_neuron, n_feat].
+                the input dimension (C_in) is associated with the number of features (n_feat)
+                and the layer dimension (C_out) is associated with the number of neurons (n_hidden).
+                Thus, the dimension becomes [n_hidden, n_feat].
 
         """
 
@@ -169,39 +186,17 @@ class SuperpositionAnalysis(EngineBase):
         superposition_index = torch.sum((ww * mask) ** 2, dim=0)  # [n_feat]
         superposition_index = superposition_index / (rep_strength**2 + tol)
 
-        return rep_strength, superposition_index
+        return rep_strength.detach().cpu(), superposition_index.detach().cpu()
 
-    def feature_dimensionality(
+    def feature_capacity(
         self,
         rep_strength: Float[Tensor, "n_feat"],
         superposition_index: Float[Tensor, "n_feat"],
     ) -> Float[Tensor, "n_feat"]:
         """
-        Compute feature dimensionality for a single layer.
-        Feature dimensionality is defined as the ratio of
-        representation strength to the superposition index.
-
-        Feature dimensionality measures the fraction of embedding dimensions
-        within a layer used for representing individual features
-        (Elhage et al., 2022). The values are bounded within a range of 0 and 1.
-        A lower value signifies that a small fraction of the layer’s
-        dimensions are used to represent the features, suggesting a stronger
-        superposition, where multiple features are encoded within the same
-        embedding dimensions. For example, a feature dimensionality with a
-        value of 3/4 can be geometrically visualized as 4 features being
-        represented in 3 dimensions (forming a tetrahedron); a value of 2/3
-        can be visualized as three features being represented in 2 dimensions
-        (forming a triangle); see Elhage et al., 2022 for more examples.
-
-        Args:
-            rep_strength (Float[Tensor, "n_feat"]): Representation strength of
-                features in the layer.
-            superposition_index (Float[Tensor, "n_feat"]): Superposition index
-                of features in the layer.
-
-        Returns:
-            Float[Tensor, "n_feat"]: Feature dimensionality for each feature
-                in the layer.
+        Compute feature capacity (feature dimensionality):
+                            fraction of embedding dimensions used for representing
+                            a feature.
         """
 
         num = rep_strength**2  # [n_feat]
@@ -210,61 +205,35 @@ class SuperpositionAnalysis(EngineBase):
 
         return feat_dimensionality
 
-    def feature_dimensionality_layers(
+    def feature_capacity_layers(
         self, conv_layer_weights: list[Tensor]
     ) -> list[Float[Tensor, "n_feat"]]:
-        """
-        Compute feature dimensionality for all convolutional layers.
 
-        Args:
-            conv_layer_weights (list[Tensor]): List of weights for each
-                convolutional layer, where each weight is a tensor of shape
-                [n_inst, n_feat, h, w] for 2D convolution or
-                [n_inst, n_feat, d, h, w] for 3D convolution.
-
-        Returns:
-            list[Float[Tensor, "n_feat"]]: List of feature dimensionality
-                tensors for each convolutional layer, where each tensor has
-                shape [n_feat]. Each tensor represents the feature dimensionality
-                for the corresponding layer, indicating how many dimensions are
-                used to represent the features in that layer.
-        """
-
-        feat_dimensionality_all_layers = []
+        feat_capacity_all_layers = []
         for i, w in enumerate(conv_layer_weights):
-            # for i in range(len(conv_layer_weights) - 1):  # exclude the last layer
-            # w = conv_layer_weights[i]  # [n_neuron, n_feat]
-
             # average weights across spatial dimensions
             if len(w.shape) == 4:
-                w = w.mean(dim=(2, 3)).cpu()  # [n_inst, n_feat]
+                w = w.mean(dim=(2, 3)).cpu()  # [n_hidden, n_feat]
             else:
-                w = w.mean(dim=(2, 3, 4)).cpu()
-            rep_strength, superposition_index = self.compute_superposition_index(w)
+                w = w.mean(dim=(2, 3, 4)).cpu()  # [n_hidden, n_feat]
+            # w_norm = (w / torch.norm(w, dim=0)).cpu()  # [n_hidden, n_feat]
+            rep_strength, superposition_index = sa.compute_superposition_index(w)
 
-            fd = self.feature_dimensionality(rep_strength, superposition_index)
-            feat_dimensionality_all_layers.append(fd)
+            fd = self.feature_capacity(rep_strength, superposition_index)
+            feat_capacity_all_layers.append(fd)
 
-        # save data
-        torch.save(
-            feat_dimensionality_all_layers,
-            f"{self.superposition_dir}/feat_dimensionality_all_layers.pt",
-        )
+        return feat_capacity_all_layers
 
-        return feat_dimensionality_all_layers
-
-    def dimensions_per_feature(self, w: Float[Tensor, "n_neuron n_feat"]) -> float:
-        """
-        Compute dimensions per feature, i.e.
-        hidden_dim divided by Frobenius norm of matrix
+    def dimensions_per_feature(self, w: Float[Tensor, "n_hidden n_feat"]) -> float:
+        """Compute dimensions per feature, i.e. hidden_dim divided by Frobenius norm of matrix
 
         input:
-            w [n_neuron, n_feat]: weight matrix (hidden_dim, input features)
+            w [n_hidden, n_feat]: weight matrix (hidden_dim, input features)
 
         output
             frobenius_norm: float
         """
-        hidden_dim = w.size(0)  # n_neuron
+        hidden_dim = w.size(0)  # n_hidden
         w_frob = torch.norm(w, p="fro") ** 2
         w_frob = w_frob.item()
         return hidden_dim / w_frob
@@ -279,9 +248,9 @@ class SuperpositionAnalysis(EngineBase):
 
             # average weights across spatial dimensions
             if len(w.shape) == 4:
-                w = w.mean(dim=(-2, -1)).cpu()
+                w = w.mean(dim=(2, 3)).cpu()
             else:
-                w = w.mean(dim=(-3, -2, -1)).cpu()
+                w = w.mean(dim=(2, 3, 4)).cpu()
 
             # frobenius norm: how many features each layer can represent
             dim_per_feat = self.dimensions_per_feature(w)
@@ -324,6 +293,14 @@ class SuperpositionAnalysis(EngineBase):
             self.background_flag,
             self.pedestal_flag,
         )
+        # rds_left, rds_right, rds_label = RDS_Handler.generate_rds(
+        #     dotMatch,
+        #     dotDens,
+        #     sa.disp_ct_pix_list,
+        #     sa.n_rds_each_disp,
+        #     sa.background_flag,
+        #     sa.pedestal_flag,
+        # )
 
         mean = (0.485, 0.456, 0.406)
         std = (0.229, 0.224, 0.225)
@@ -346,16 +323,28 @@ class SuperpositionAnalysis(EngineBase):
         )
 
         n_samples = len(rds_loader.dataset)
-        # layer_act_dict = {
-        #     key: torch.empty((n_samples, 32), dtype=torch.float32)
-        #     for key in sa.layer_name
-        # }
         layer_act_dict = {
-            "encoder.in_conv": torch.empty((n_samples, 32), dtype=torch.float32),
-            "encoder.layer2": torch.empty((n_samples, 32), dtype=torch.float32),
-            "decoder.layer3": torch.empty((n_samples, 32 * 96), dtype=torch.float32),
-            "decoder.layer4": torch.empty((n_samples, 192), dtype=torch.float32),
+            "layer19": torch.empty((n_samples, 32 * 96), dtype=torch.float32),
+            "layer20": torch.empty((n_samples, 32 * 96), dtype=torch.float32),
+            "layer21": torch.empty((n_samples, 64 * 48), dtype=torch.float32),
+            "layer22": torch.empty((n_samples, 64 * 48), dtype=torch.float32),
+            "layer23": torch.empty((n_samples, 64 * 48), dtype=torch.float32),
+            "layer24": torch.empty((n_samples, 64 * 24), dtype=torch.float32),
+            "layer25": torch.empty((n_samples, 64 * 24), dtype=torch.float32),
+            "layer26": torch.empty((n_samples, 64 * 24), dtype=torch.float32),
+            "layer27": torch.empty((n_samples, 64 * 12), dtype=torch.float32),
+            "layer28": torch.empty((n_samples, 64 * 12), dtype=torch.float32),
+            "layer29": torch.empty((n_samples, 64 * 12), dtype=torch.float32),
+            "layer30": torch.empty((n_samples, 128 * 6), dtype=torch.float32),
+            "layer31": torch.empty((n_samples, 128 * 6), dtype=torch.float32),
+            "layer32": torch.empty((n_samples, 128 * 6), dtype=torch.float32),
+            "layer33a": torch.empty((n_samples, 64 * 12), dtype=torch.float32),
+            "layer34a": torch.empty((n_samples, 64 * 24), dtype=torch.float32),
+            "layer35a": torch.empty((n_samples, 64 * 48), dtype=torch.float32),
+            "layer36a": torch.empty((n_samples, 32 * 96), dtype=torch.float32),
+            "layer37": torch.empty((n_samples, 192), dtype=torch.float32),
         }
+
         disp_record = torch.empty(n_samples, dtype=torch.int8)
         for i, (inputs_left, inputs_right, disps) in enumerate(rds_loader):
 
@@ -423,7 +412,7 @@ class SuperpositionAnalysis(EngineBase):
             for dotMatch in self.dotMatch_list:
 
                 print(
-                    "Computing RDS activation: "
+                    f"Computing RDS activation: "
                     + f"dotDens={dotDens:.2f}, "
                     + f"dotMatch={dotMatch:.2f}"
                 )
@@ -431,7 +420,7 @@ class SuperpositionAnalysis(EngineBase):
                 # compute layer activation for RDS
                 self.compute_layer_act_rds(dotMatch, dotDens)
 
-    def compute_monosemanticity(self, layer_name: str) -> Float[Tensor, "n_neuron"]:
+    def compute_monosemanticity(self, layer_name: str) -> Float[Tensor, "n_hidden"]:
         """
         Compute the monosemanticity score for each neuron in a given layer.
 
@@ -449,47 +438,47 @@ class SuperpositionAnalysis(EngineBase):
         dotDens = 0.3
         dotMatch = 1.0
         temp = torch.load(
-            f"{self.superposition_dir}/"
+            f"{sa.superposition_dir}/"
             + f"act_rds_dotDens_{dotDens:.2f}_"
             + f"dotMatch_{dotMatch:.2f}.pt"
         )[layer_name]
         n_sample = temp.size(0) // 2
-        n_feat = len(self.dotMatch_list) * len(self.dotDens_list) * 2
-        n_neuron = temp.size(1)
-        act_all = torch.empty((n_sample, n_feat, n_neuron), dtype=torch.float32)
+        n_feat = len(sa.dotMatch_list) * len(sa.dotDens_list) * 2
+        n_hidden = temp.size(1)
+        act_all = torch.empty((n_sample, n_feat, n_hidden), dtype=torch.float32)
 
         # gather the activation for all features (RDSs)
-        for dm, dotMatch in enumerate(self.dotMatch_list):
-            for dd, dotDens in enumerate(self.dotDens_list):
+        for dm, dotMatch in enumerate(sa.dotMatch_list):
+            for dd, dotDens in enumerate(sa.dotDens_list):
 
                 # dotDens = 0.3
                 # dotMatch = 1.0
                 act_rds = torch.load(
-                    f"{self.superposition_dir}/"
+                    f"{sa.superposition_dir}/"
                     + f"act_rds_dotDens_{dotDens:.2f}_"
                     + f"dotMatch_{dotMatch:.2f}.pt"
                 )[
                     layer_name
-                ]  # [n_sample, n_neuron]
+                ]  # [n_sample, n_hidden]
 
                 disp_record = torch.load(
-                    f"{self.superposition_dir}/"
+                    f"{sa.superposition_dir}/"
                     + f"disp_record_rds_dotDens_{dotDens:.2f}_"
                     + f"dotMatch_{dotMatch:.2f}.pt"
                 )
 
                 # store the activation for near and far disparity
-                count = (dm * len(self.dotDens_list) * 2) + (dd * 2)
+                count = (dm * len(sa.dotDens_list) * 2) + (dd * 2)
 
                 # get near/far disparity activation
-                act_all[:, count] = act_rds[disp_record == self.disp_ct_pix_list[0]]
-                act_all[:, count + 1] = act_rds[disp_record == self.disp_ct_pix_list[1]]
+                act_all[:, count] = act_rds[disp_record == sa.disp_ct_pix_list[0]]
+                act_all[:, count + 1] = act_rds[disp_record == sa.disp_ct_pix_list[1]]
 
         # average across batch
         tol = 1e-6
-        act_all_avg = act_all.mean(dim=0)  # [n_feat, n_neuron]
-        num = torch.max(F.relu(act_all_avg), dim=0)[0]  # [n_neuron]
-        den = torch.sum(F.relu(act_all_avg), dim=0)  # [n_neuron]
+        act_all_avg = act_all.mean(dim=0)  # [n_feat, n_hidden]
+        num = torch.max(F.relu(act_all_avg), dim=0)[0]  # [n_hidden]
+        den = torch.sum(F.relu(act_all_avg), dim=0)  # [n_hidden]
         monosemanticity = num / (den + tol)
 
         return monosemanticity
@@ -502,13 +491,13 @@ class SuperpositionAnalysis(EngineBase):
         save_flag: bool = False,
     ):
         """
-        plot representation strength and superposition index
+        plot bar plot of representation strength and superposition index
         """
 
         n_feat = rep_strength.shape[-1]
         features = range(n_feat)
-        bars = rep_strength.detach().cpu().numpy()
-        color_values = superposition_index.detach().cpu().numpy()
+        bars = rep_strength.numpy()
+        color_values = superposition_index.numpy()
         color_values /= np.max(color_values)
         cmap = mlp.colormaps["cividis"]
         bar_colors = [cmap(value) for value in color_values]
@@ -570,246 +559,9 @@ class SuperpositionAnalysis(EngineBase):
                 bbox_inches="tight",
             )
 
-    def plot_featDimensionality(
-        self, feat_dimensionality_layers: list[Tensor], save_flag: bool = False
-    ):
-
-        # average across features
-        feat_dimensionality_avg = torch.empty(len(feat_dimensionality_layers))
-        feat_dimensionality_sem = torch.empty(len(feat_dimensionality_layers))
-        for i in range(len(feat_dimensionality_layers)):
-            feat_dimensionality_avg[i] = feat_dimensionality_layers[i].mean().detach()
-            feat_dimensionality_sem[i] = sem(
-                feat_dimensionality_layers[i].detach().numpy()
-            )
-
-        sns.set_theme()
-        sns.set_theme(context="paper", style="white", font_scale=3, palette="deep")
-
-        figsize = (9, 9)
-        n_row = 1
-        n_col = 1
-
-        fig, axes = plt.subplots(
-            nrows=n_row, ncols=n_col, figsize=figsize, sharex=True, sharey=True
-        )
-
-        fig.text(
-            0.5,
-            1.0,
-            f"Feat. dimensionality ({self.config.binocular_interaction})",
-            ha="center",
-        )
-        fig.text(-0.05, 0.5, "Feat. dimensionality", va="center", rotation=90)
-        fig.tight_layout()
-        plt.subplots_adjust(wspace=0.2, hspace=0.3)
-
-        ## plot the one standard error
-        x = np.arange(len(feat_dimensionality_avg))  # [0, 1, 2, ...]
-        y = np.array(feat_dimensionality_avg)
-        y_err = np.array(feat_dimensionality_sem)
-        axes.errorbar(x, y, yerr=y_err, lw=3, c="black", ls="-", capsize=7)
-
-        # plot the marker
-        markersize = 12
-        axes.plot(x, y, "o", markersize=markersize, c="black")
-
-        # plot the horizontal line at 0.5
-        axes.axhline(y=0.5, color="red", linestyle="--", linewidth=2)
-
-        x_low = 0.0
-        x_up = len(feat_dimensionality_avg)
-        x_step = 1.0
-        y_low = 0.0
-        y_up = 1.05
-        y_step = 0.2
-
-        # layer_name = self.layer_name[:-1]  # exclude the last layer (decoder.layer4)
-        axes.set_xticks(np.round(np.arange(x_low, x_up, x_step), 2))
-        axes.set_xticklabels(self.layer_name, rotation=45)
-        axes.set_yticks(np.round(np.arange(y_low, y_up, y_step), 2))
-        axes.set_yticklabels(np.round(np.arange(y_low, y_up, y_step), 2))
-
-        axes.set_xlim(x_low - 0.2, x_up - 0.5)
-        axes.set_ylim(y_low - 0.05, y_up)
-
-        # Hide the right and top spines
-        axes.spines["right"].set_visible(False)
-        axes.spines["top"].set_visible(False)
-
-        # Only show ticks on the left and bottom spines
-        axes.yaxis.set_ticks_position("left")
-        axes.xaxis.set_ticks_position("bottom")
-        # axes.tick_params(direction='in', length=4, width=1)
-
-        if save_flag:
-            fig.savefig(
-                f"{self.superposition_dir}/PlotLine_featDimensionality.pdf",
-                dpi=600,
-                bbox_inches="tight",
-            )
-
-    def plot_featDimensionality_all_interactions(self, save_flag: bool = False):
-        """
-        plot the feature dimensionality for all binocular interactions.
-        """
-
-        sp_dir_avg = "run/sceneflow_monkaa/bino_interaction_avg/"
-        sp_dir_default = f"{sp_dir_avg}/superposition_default_{self.config.seed}"
-        sp_dir_bem = f"{sp_dir_avg}/superposition_bem_{self.config.seed}"
-        sp_dir_cmm = f"{sp_dir_avg}/superposition_cmm_{self.config.seed}"
-        sp_dir_sum_diff = f"{sp_dir_avg}/superposition_sum_diff_{self.config.seed}"
-
-        sp_dirs = [sp_dir_default, sp_dir_bem, sp_dir_cmm, sp_dir_sum_diff]
-
-        # Define group‐names and layer‐names in the same order as rows/columns:
-        groups = ["default", "bem", "cmm", "sum_diff"]
-        n_layers = 2  # only the last 2 layers: layer 3 & 4
-
-        # Build a list of dicts (one row per (group, layer) combination):
-        # load data for obtaining the shape
-        dr = sp_dirs[0]
-        temp = torch.load(f"{dr}/feat_dimensionality_all_layers.pt")
-        n_rows_per_layer = np.array([len(f) for f in temp])
-        n_rows = n_rows_per_layer[2:].sum() * len(groups)  # only layer 3 & 4
-        records = np.zeros((n_rows, 3), dtype=np.float32)  # [interaction, layer, unit]
-
-        feat_dim_avg_all = torch.empty((len(sp_dirs), 4))
-        feat_dim_sem_all = torch.empty((len(sp_dirs), 4))
-        for d in range(len(sp_dirs)):
-
-            # load data
-            # d = 0
-            dr = sp_dirs[d]
-            feat_dimensionality_layers = torch.load(
-                f"{dr}/feat_dimensionality_all_layers.pt"
-            )
-
-            for j in range(n_layers):
-
-                n_units = len(feat_dimensionality_layers[j + 2])  # start from layer 3
-                id_start = (d * n_rows_per_layer[2:].sum()) + n_rows_per_layer[
-                    2 : j + 2
-                ].sum()
-                id_end = id_start + n_units
-                # print(f"{id_start} - {id_end}")
-
-                records[id_start:id_end, 0] = (
-                    d  # bino interaction: 1: default, 2: bem, 3: cmm, 4: sum_diff
-                )
-                records[id_start:id_end, 1] = j + 3  # layer, start from layer 3
-                records[id_start:id_end, 2] = (
-                    feat_dimensionality_layers[j + 2].detach().numpy()
-                )
-
-            # average across layers
-            feat_dimensionality_avg = torch.empty(len(feat_dimensionality_layers))
-            feat_dimensionality_sem = torch.empty(len(feat_dimensionality_layers))
-            for i in range(len(feat_dimensionality_layers)):
-                feat_dimensionality_avg[i] = (
-                    feat_dimensionality_layers[i].mean().detach()
-                )
-                feat_dimensionality_sem[i] = sem(feat_dimensionality_layers[i].detach())
-
-            feat_dim_avg_all[d] = feat_dimensionality_avg
-            feat_dim_sem_all[d] = feat_dimensionality_sem
-
-        # create pandas df
-        df = pd.DataFrame(records, columns=["bino", "layer", "feat_dim"])
-        # 2way ANOVA
-        aov2 = pg.anova(data=df, dv="feat_dim", between=["bino", "layer"])
-        # save 2-way anova to csv
-        aov2.to_csv(f"{sp_dir_avg}/feature_dimensionality_anova2way.csv", index=False)
-
-        # Tukey test
-        df_layer3 = df[df.layer == 3]
-        tukey = pairwise_tukeyhsd(
-            endog=df_layer3["feat_dim"], groups=df_layer3["bino"], alpha=0.05
-        )
-        print(tukey)
-        tukey_df = pd.DataFrame(
-            data=tukey._results_table.data[1:], columns=tukey._results_table.data[0]
-        )
-        # save
-        tukey_df.to_csv(
-            f"{sp_dir_avg}/feature_dimensionality_layer3_tukey.csv", index=False
-        )
-
-        # start plotting
-        sns.set_theme()
-        sns.set_theme(context="paper", style="white", font_scale=3, palette="deep")
-
-        figsize = (9, 9)
-        n_row = 1
-        n_col = 1
-
-        fig, axes = plt.subplots(
-            nrows=n_row, ncols=n_col, figsize=figsize, sharex=True, sharey=True
-        )
-
-        fig.text(
-            0.5,
-            1.0,
-            "Feat. dimensionality all interactions",
-            ha="center",
-        )
-        fig.text(-0.05, 0.5, "Feat. dimensionality", va="center", rotation=90)
-        fig.tight_layout()
-        plt.subplots_adjust(wspace=0.2, hspace=0.3)
-
-        ## plot the one standard error
-        line_colors = ["black", "blue", "magenta", "darkorange"]
-        x = [0, 1]  # only layer 3 and 4
-        for f in range(len(feat_dim_avg_all)):
-            y = np.array(feat_dim_avg_all[f, 2:])  # only layer 3 and 4
-            y_err = np.array(feat_dim_sem_all[f, 2:])  # only layer 3 and 4
-            axes.errorbar(x, y, yerr=y_err, lw=3, c=line_colors[f], ls="-", capsize=7)
-
-            # # plot the marker
-            # markersize = 12
-            # axes.plot(x, y, "o", markersize=markersize, c="black")
-
-        # legend
-        axes.legend(["Concat", "BEM", "CMM", "Sum-diff"], loc="lower right")
-
-        # plot the horizontal line at 0.5
-        axes.axhline(y=0.5, color="red", linestyle="--", linewidth=2)
-
-        x_low = 0.0
-        x_up = 2  # only layer 3 and 4
-        x_step = 1.0
-        y_low = 0.0
-        y_up = 1.05
-        y_step = 0.2
-
-        # layer_name = self.layer_name[:-1]  # exclude the last layer (decoder.layer4)
-        axes.set_xticks(np.round(np.arange(x_low, x_up, x_step), 1))
-        axes.set_xticklabels(self.layer_name[2:], rotation=45)
-        axes.set_yticks(np.round(np.arange(y_low, y_up, y_step), 2))
-        axes.set_yticklabels(np.round(np.arange(y_low, y_up, y_step), 2))
-
-        axes.set_xlim(x_low - 0.2, x_up - 0.5)
-        axes.set_ylim(y_low - 0.05, y_up)
-
-        # Hide the right and top spines
-        axes.spines["right"].set_visible(False)
-        axes.spines["top"].set_visible(False)
-
-        # Only show ticks on the left and bottom spines
-        axes.yaxis.set_ticks_position("left")
-        axes.xaxis.set_ticks_position("bottom")
-        # axes.tick_params(direction='in', length=4, width=1)
-
-        if save_flag:
-            fig.savefig(
-                f"{sp_dir_avg}/PlotLine_featDimensionality_all_interactions.pdf",
-                dpi=600,
-                bbox_inches="tight",
-            )
-
-    def plot_monosemanticity_spectrum_in_layer(
+    def plotStem_monosemanticity(
         self,
-        monosemanticity: Float[Tensor, "n_neuron"],
+        monosemanticity: Float[Tensor, "n_hidden"],
         layer_name: str,
         save_flag: bool = False,
     ):
@@ -863,7 +615,7 @@ class SuperpositionAnalysis(EngineBase):
                 bbox_inches="tight",
             )
 
-    def plotLine_n_mono_vs_layer(
+    def plotLine_monosemanticity_vs_layer(
         self, threshold: float = 0.5, n_features: float = 54, save_flag: bool = False
     ):
         """
@@ -884,7 +636,7 @@ class SuperpositionAnalysis(EngineBase):
 
         mono_per_feat = torch.empty(len(self.layer_name))
         for i in range(len(self.layer_name)):
-            layer_name = self.layer_name[i]
+            layer_name = sa.layer_name[i]
             monosemanticity = self.compute_monosemanticity(layer_name)
 
             # threshold the monosemanticity
@@ -947,7 +699,7 @@ class SuperpositionAnalysis(EngineBase):
 # %%
 params_rds = {
     "target_disp": 10,  # RDS target disparity (pix) to be analyzed
-    "n_rds_each_disp": 256,  # n_rds for each disparity magnitude in disp_ct_pix
+    "n_rds_each_disp": 64,  # n_rds for each disparity magnitude in disp_ct_pix
     "dotDens_list": 0.1 * np.arange(1, 10),  # dot density
     "rds_type": ["ards", "hmrds", "crds"],  # ards: 0, crds: 1, hmrds: 0.5, urds: -1
     "dotMatch_list": [0.0, 0.5, 1.0],  # dot match
@@ -955,9 +707,8 @@ params_rds = {
     "pedestal_flag": 0,  # 1: use pedestal to ensure rds disparity > 0
     "batch_size_rds": 2,
 }
-config = ConfigBNN()
+config = ConfigGCNet()
 sa = SuperpositionAnalysis(config, params_rds)
-
 # %%
 conv_layer_names, conv_layer_weights = sa.get_conv_names_and_weights()
 
@@ -965,26 +716,35 @@ for i, w in enumerate(conv_layer_weights):
 
     # average weights across spatial dimensions
     if len(w.shape) == 4:
-        w = w.mean(dim=(-2, -1)).cpu()  # [n_inst, n_feat]
+        w = w.mean(dim=(2, 3)).cpu()  # [n_hidden, n_feat]
     else:
-        w = w.mean(dim=(2, 3, 4)).cpu()
+        w = w.mean(dim=(2, 3, 4)).cpu()  # [n_hidden, n_feat]
+    # w_norm = (w / torch.norm(w, dim=0)).cpu()
     rep_strength, superposition_index = sa.compute_superposition_index(w)
 
     layer_name = conv_layer_names[i]
     sa.plotBar_superposition(rep_strength, superposition_index, layer_name, save_flag=1)
 
 # %%
-feat_dimensionality_layers = sa.feature_dimensionality_layers(conv_layer_weights)
-sa.plot_featDimensionality(feat_dimensionality_layers, save_flag=True)
-sa.plot_featDimensionality_all_interactions(save_flag=True)
+feat_capacity_layers = sa.feature_capacity_layers(conv_layer_weights)
+
+feat_cap_avg = torch.empty(len(feat_capacity_layers))
+feat_cap_sem = torch.empty(len(feat_capacity_layers))
+for i in range(len(feat_capacity_layers)):
+    feat_cap_avg[i] = feat_capacity_layers[i].mean()
+    feat_cap_sem[i] = sem(feat_capacity_layers[i].numpy())
+
+plt.plot(feat_cap_avg, "o-")
 
 # %%
 dim_per_feat_layers = sa.dimension_per_feature_layers(conv_layer_weights)
-print(dim_per_feat_layers)
+
+plt.plot(dim_per_feat_layers / dim_per_feat_layers.max(), "o-")
+plt.plot(feat_cap_avg, "o-")
 
 
 # %% plot weights
-i = 1
+i = -2
 w_pre = conv_layer_weights[i]
 w_post = conv_layer_weights[i + 1]
 plt.imshow(
@@ -1006,7 +766,7 @@ plt.imshow(ww, cmap="coolwarm", interpolation="nearest")
 sa.compute_layer_act_rds_all()
 
 # %%
-layer_name = sa.layer_name[2]
+layer_name = sa.layer_name[-1]
 
 # load the activation only for getting the shape
 dotDens = 0.3
@@ -1018,8 +778,8 @@ temp = torch.load(
 )[layer_name]
 n_sample = temp.size(0) // 2
 n_feat = len(sa.dotMatch_list) * len(sa.dotDens_list) * 2
-n_neuron = temp.size(1)
-act_all = torch.empty((n_sample, n_feat, n_neuron), dtype=torch.float32)
+n_hidden = temp.size(1)
+act_all = torch.empty((n_sample, n_feat, n_hidden), dtype=torch.float32)
 
 for dm, dotMatch in enumerate(sa.dotMatch_list):
     for dd, dotDens in enumerate(sa.dotDens_list):
@@ -1032,7 +792,7 @@ for dm, dotMatch in enumerate(sa.dotMatch_list):
             + f"dotMatch_{dotMatch:.2f}.pt"
         )[
             layer_name
-        ]  # [n_sample, n_neuron]
+        ]  # [n_sample, n_hidden]
 
         disp_record = torch.load(
             f"{sa.superposition_dir}/"
@@ -1051,21 +811,23 @@ act_norm = act_all / act_all.max()
 rep_strength, superposition_index = sa.compute_superposition_index(
     act_norm.mean(dim=0).T
 )
+feat_cap = sa.feature_capacity(
+    rep_strength,
+    superposition_index,
+)
 sa.plotBar_superposition(
     rep_strength,
     superposition_index,
     f"{layer_name}_far",
     save_flag=False,
 )
-
 # %% monosemanticity
 save_flag = True  # set to True to save the plot
 for i in range(len(sa.layer_name)):
     layer_name = sa.layer_name[i]
     monosemanticity = sa.compute_monosemanticity(layer_name)
-    sa.plot_monosemanticity_spectrum_in_layer(monosemanticity, layer_name, save_flag)
+    sa.plotStem_monosemanticity(monosemanticity, layer_name, save_flag)
 # %%
 save_flag = True
-sa.plotLine_n_mono_vs_layer(save_flag=save_flag)
-
+sa.plotLine_monosemanticity_vs_layer(save_flag=save_flag)
 # %%

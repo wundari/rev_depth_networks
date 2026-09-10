@@ -6,8 +6,8 @@ from torch import Tensor
 from torch.utils.data import DataLoader
 from torchvision.transforms import transforms
 
-from modules.bnn import build_bnn
-from config.config import ConfigBNN
+from modules.gcnet import build_gcnet
+from config.config import ConfigGCNet
 
 import numpy as np
 import pandas as pd
@@ -19,8 +19,9 @@ import seaborn as sns
 
 from scipy.stats import sem
 import pingouin as pg
-from statsmodels.stats.multicomp import pairwise_tukeyhsd
 import statsmodels.stats.multicomp as mc
+from statsmodels.stats.multicomp import pairwise_tukeyhsd
+
 
 from RDS.DataHandler_RDS import RDS_Handler, DatasetRDS
 from utilities.misc import NestedTensor
@@ -29,7 +30,7 @@ from utilities.misc import NestedTensor
 # %%
 class GA_Superposition:
 
-    def __init__(self, config: ConfigBNN, params_rds: dict):
+    def __init__(self, config: ConfigGCNet, params_rds: dict):
 
         self.config = config
         self.dataset = config.dataset
@@ -38,28 +39,6 @@ class GA_Superposition:
         self.seed = config.seed
         self.epoch = config.epoch_to_load
         self.iter = config.iter_to_load
-        self.device = config.device
-
-        # rds parameters
-        self.target_disp = params_rds[
-            "target_disp"
-        ]  # RDS target disparity (pix) to be analyzed
-        self.n_rds_each_disp = params_rds[
-            "n_rds_each_disp"
-        ]  # n_rds for each disparity magnitude in disp_ct_pix
-        self.dotDens_list = params_rds["dotDens_list"]  # dot density
-        self.rds_type = params_rds[
-            "rds_type"
-        ]  # ards: 0.0, crds: 1.0, hmrds: 0.5, urds: -1.0
-        self.dotMatch_list = params_rds["dotMatch_list"]  # [0.0, 0.5, 1.0] dot match
-        self.background_flag = params_rds["background_flag"]  # 1: with cRDS background
-        self.pedestal_flag = params_rds[
-            "pedestal_flag"
-        ]  # 1: use pedestal to ensure rds disparity > 0
-        self.batch_size_rds = params_rds[
-            "batch_size_rds"
-        ]  # batch size for RDS generation
-        self.disp_ct_pix_list = [self.target_disp, -self.target_disp]
 
         # set up experiment directory
         self.experiment_dir = (
@@ -102,7 +81,7 @@ class GA_Superposition:
             os.makedirs(self.group_stat_dir)
 
         # load model
-        self.model = build_bnn(config)
+        self.model = build_gcnet(config)
 
         self.layer_name = [
             "encoder.in_conv",
@@ -112,12 +91,69 @@ class GA_Superposition:
         ]
 
         # target_layer, only convolutional layers
+        # target_layer, only convolutional layers
         self.target_layer = [
-            self.model.encoder.in_conv[0],
-            self.model.encoder.layer2[0],
-            self.model.decoder.layer3[0],
-            self.model.decoder.layer4,
+            self.model.encoder.layer1[0],
+            self.model.encoder.res_block[0].conv2d_block1[0],
+            self.model.encoder.res_block[0].conv2d_block2[0],
+            self.model.encoder.res_block[1].conv2d_block1[0],
+            self.model.encoder.res_block[1].conv2d_block2[0],
+            self.model.encoder.res_block[2].conv2d_block1[0],
+            self.model.encoder.res_block[2].conv2d_block2[0],
+            self.model.encoder.res_block[3].conv2d_block1[0],
+            self.model.encoder.res_block[3].conv2d_block2[0],
+            self.model.encoder.res_block[4].conv2d_block1[0],
+            self.model.encoder.res_block[4].conv2d_block2[0],
+            self.model.encoder.res_block[5].conv2d_block1[0],
+            self.model.encoder.res_block[5].conv2d_block2[0],
+            self.model.encoder.res_block[6].conv2d_block1[0],
+            self.model.encoder.res_block[6].conv2d_block2[0],
+            self.model.encoder.res_block[7].conv2d_block1[0],
+            self.model.encoder.res_block[7].conv2d_block2[0],
+            self.model.encoder.layer18,
+            self.model.decoder.layer19[0],
+            self.model.decoder.layer20[0],
+            self.model.decoder.layer21[0],
+            self.model.decoder.layer22[0],
+            self.model.decoder.layer23[0],
+            self.model.decoder.layer24[0],
+            self.model.decoder.layer25[0],
+            self.model.decoder.layer26[0],
+            self.model.decoder.layer27[0],
+            self.model.decoder.layer28[0],
+            self.model.decoder.layer29[0],
+            self.model.decoder.layer30[0],
+            self.model.decoder.layer31[0],
+            self.model.decoder.layer32[0],
+            self.model.decoder.layer33a[0],  # convT3d
+            self.model.decoder.layer34a[0],  # convT3d
+            self.model.decoder.layer35a[0],  # convT3d
+            self.model.decoder.layer36a[0],  # convT3d
+            self.model.decoder.layer37,  # convT3d
         ]
+
+        # rds parameters
+        self.target_disp = params_rds[
+            "target_disp"
+        ]  # RDS target disparity (pix) to be analyzed
+        self.n_rds_each_disp = params_rds[
+            "n_rds_each_disp"
+        ]  # n_rds for each disparity magnitude in disp_ct_pix
+        self.dotDens_list = params_rds["dotDens_list"]  # dot density
+        self.rds_type = params_rds[
+            "rds_type"
+        ]  # ards: 0.0, crds: 1.0, hmrds: 0.5, urds: -1.0
+        self.dotMatch_list = params_rds["dotMatch_list"]  # [0.0, 0.5, 1.0] dot match
+        self.background_flag = params_rds["background_flag"]  # 1: with cRDS background
+        self.pedestal_flag = params_rds[
+            "pedestal_flag"
+        ]  # 1: use pedestal to ensure rds disparity > 0
+        self.batch_size_rds = params_rds[
+            "batch_size_rds"
+        ]  # batch size for RDS generation
+        self.disp_ct_pix_list = [self.target_disp, -self.target_disp]
+
+        self.device = config.device
 
         # print out network configuration
         self.__getconfig__()
@@ -201,7 +237,7 @@ class GA_Superposition:
         """
 
         # build model
-        self.model = build_bnn(self.config)
+        self.model = build_gcnet(self.config)
 
         # load model state from checkpoint
         resume = f"epoch_{self.epoch}_iter_{self.iter}_model_best.pth.tar"
@@ -220,8 +256,8 @@ class GA_Superposition:
         self.model.eval()
 
         print(
-            f"BNN was successfully loaded to {self.device}. \n"
-            + f"BNN model: {resume_path}\n"
+            f"GC-Net was successfully loaded to {self.device}. \n"
+            + f"GC-Net model: {resume_path}\n"
             + f"binocular interaction: {self.binocular_interaction}\n"
             + f"compile mode: {self.config.compile_mode}\n"
             + f"experiment dir: {self.experiment_dir}\n"
@@ -245,8 +281,8 @@ class GA_Superposition:
         the input dimension (C_in) is associated with the number
         of features (n_feat),
         and the layer dimension (C_out) is associated with the number
-        of neurons (n_hidden).
-        Thus, the dimension becomes [n_hidden, n_feat].
+        of neurons (n_neuron).
+        Thus, the dimension becomes [n_neuron, n_feat].
 
         Returns:
             conv_layer_names (list): List of names of convolutional layers.
@@ -281,9 +317,7 @@ class GA_Superposition:
 
         return (conv_layer_names, conv_layer_weights)
 
-    def compute_superposition_index(
-        self, w: Float[Tensor, "n_hidden n_feat"]
-    ) -> tuple[Float[Tensor, "n_feat"], Float[Tensor, "n_feat"]]:
+    def compute_superposition_index(self, w: Float[Tensor, "n_neuron n_feat"]):
         """
         Compute representation strength and superposition index.
 
@@ -307,8 +341,8 @@ class GA_Superposition:
                 where tol is a small value to avoid division by zero.
 
         input args:
-            w <torch.Tensor, [n_hidden, n_feat]: weight matrix of a given layer
-                after spatial averaging (average across the width and height).
+            w <torch.Tensor, [n_neuron, n_feat]: weight matrix after spatial
+                averaging (average across the width and height).
 
                 the original weight matrix is of shape [C_out, C_in, h, w]
                 (for 2D convolution) or [C_out, C_in, d, h, w] for
@@ -324,8 +358,8 @@ class GA_Superposition:
                 the input dimension (C_in) is associated with the number
                 of features (n_feat),
                 and the layer dimension (C_out) is associated with the number
-                of neurons (n_hidden).
-                Thus, the dimension becomes [n_hidden, n_feat].
+                of neurons (n_neuron).
+                Thus, the dimension becomes [n_neuron, n_feat].
 
         """
 
@@ -387,11 +421,6 @@ class GA_Superposition:
 
         num = rep_strength**2  # [n_feat]
         den = (rep_strength**2) + superposition_index  # [n_feat]
-        # ps: the denominator has the term (rep_strength**2) because the definition
-        # of superposition_index has excluded the self-projection term (i.e., the
-        # projection of Wi onto itself, which is ||Wi||^2). See the function
-        # compute_superposition_index() above for more details.
-
         feat_dimensionality = num / den  # [n_feat]
 
         return feat_dimensionality
@@ -404,7 +433,7 @@ class GA_Superposition:
 
         Args:
             conv_layer_names <list[str]>: list of names of convolutional layers
-                in BNN:
+                in GC-Net:
                 ["encoder.in_conv.0.weight",
                 "encoder.layer2.0.weight",
                 "decoder.layer3.0.weight",
@@ -659,7 +688,7 @@ class GA_Superposition:
         sns.set_theme()
         sns.set_theme(context="paper", style="white", font_scale=3, palette="deep")
 
-        figsize = (7, 7)
+        figsize = (16, 4)
         n_row = 1
         n_col = 1
 
@@ -680,12 +709,10 @@ class GA_Superposition:
         positions = np.arange(1, len(conv_layer_names) + 1)
 
         # Violin plot
-        data = [
-            feat_dim_layers[conv_layer_names[0]],
-            feat_dim_layers[conv_layer_names[1]],
-            feat_dim_layers[conv_layer_names[2]],
-            feat_dim_layers[conv_layer_names[3]],
-        ]
+        data = []
+        for layer_name in conv_layer_names:
+            data.append(feat_dim_layers[layer_name])
+
         # Compute a width for each violin (e.g. proportion of max count)
         counts = np.array([len(d) for d in data])
         widths = counts / counts.max()
@@ -716,7 +743,7 @@ class GA_Superposition:
             axes.scatter(x, layer, s=12, alpha=1.0, color="#000000")
 
         # Labels and title
-        axes.set_xticks(positions)
+        # axes.set_xticks(positions)
         axes.set_xlabel("Convolutional Layer")
         axes.set_ylabel("Feat. dimensionality")
 
@@ -743,3 +770,6 @@ class GA_Superposition:
                 dpi=600,
                 bbox_inches="tight",
             )
+
+
+# %%

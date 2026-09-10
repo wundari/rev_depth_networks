@@ -1,21 +1,24 @@
 # %% load necessary modules
 import torch
 from torch import Tensor
+from torch import nn
 
-from modules.bnn import build_bnn
+from modules.gcnet import build_gcnet
 
-from config.config import ConfigBNN
+from config.config import ConfigGCNet
 import os
 
 
 # %%
 class GA:
-    def __init__(self, config: ConfigBNN, params_rds: dict):
+    def __init__(self, config: ConfigGCNet, params_rds: dict):
 
+        self.model_name = config.model_name
         self.config = config
         self.dataset = config.dataset
         self.binocular_interaction = config.binocular_interaction
         self.interactions = ["default", "bem", "cmm", "sum_diff"]
+        self.interactions = config.interactions
         self.seed = config.seed
         self.epoch_to_load = config.epoch_to_load
         self.iter_to_load = config.iter_to_load
@@ -32,6 +35,11 @@ class GA:
         self.rds_type = params_rds[
             "rds_type"
         ]  # ards: 0.0, crds: 1.0, hmrds: 0.5, urds: -1.0
+        self.rds_types = {
+            "ards": 0.0,
+            "hmrds": 0.5,
+            "crds": 1.0,
+        }  # {rds_type: dotMatch}
         self.dotMatch_list = params_rds["dotMatch_list"]  # [0.0, 0.5, 1.0] dot match
         self.background_flag = params_rds["background_flag"]  # 1: with cRDS background
         self.pedestal_flag = params_rds[
@@ -77,27 +85,98 @@ class GA:
         if config.load_state:
             self.load_model()
         else:  # build from scratch
-            self.model = build_bnn(config)
+            self.model = build_gcnet(config)
             self.model.to(self.device)
             self.model.eval()
             print(
-                f"BNN was built from scratch and successfully loaded to {self.device}.\n"
-                + "BNN is in eval mode"
+                f"{self.model_name} was built from scratch and successfully loaded to {self.device}.\n"
+                + f"{self.model_name} is in eval mode"
             )
 
         self.layer_name = [
-            "encoder.in_conv",
-            "encoder.layer2",
-            "decoder.layer3",
-            "decoder.layer4",
+            "layer19",
+            "layer20",
+            "layer21",
+            "layer22",
+            "layer23",
+            "layer24",
+            "layer25",
+            "layer26",
+            "layer27",
+            "layer28",
+            "layer29",
+            "layer30",
+            "layer31",
+            "layer32",
+            "layer33a",
+            "layer34a",
+            "layer35a",
+            "layer36a",
+            "layer37",
         ]
+
+        # # target_layer, only convolutional layers
+        # self.target_layer = [
+        #     self.model.decoder.layer19[0],
+        #     self.model.decoder.layer20[0],
+        #     self.model.decoder.layer21[0],
+        #     self.model.decoder.layer22[0],
+        #     self.model.decoder.layer23[0],
+        #     self.model.decoder.layer24[0],
+        #     self.model.decoder.layer25[0],
+        #     self.model.decoder.layer26[0],
+        #     self.model.decoder.layer27[0],
+        #     self.model.decoder.layer28[0],
+        #     self.model.decoder.layer29[0],
+        #     self.model.decoder.layer30[0],
+        #     self.model.decoder.layer31[0],
+        #     self.model.decoder.layer32[0],
+        #     self.model.decoder.layer33a[0],  # convT3d
+        #     self.model.decoder.layer34a[0],  # convT3d
+        #     self.model.decoder.layer35a[0],  # convT3d
+        #     self.model.decoder.layer36a[0],  # convT3d
+        #     self.model.decoder.layer37,  # convT3d
+        # ]
 
         # target_layer, only convolutional layers
         self.target_layer = [
-            self.model.encoder.in_conv[0],
-            self.model.encoder.layer2[0],
-            self.model.decoder.layer3[0],
-            self.model.decoder.layer4,
+            self.model.encoder.layer1[0],
+            self.model.encoder.res_block[0].conv2d_block1[0],
+            self.model.encoder.res_block[0].conv2d_block2[0],
+            self.model.encoder.res_block[1].conv2d_block1[0],
+            self.model.encoder.res_block[1].conv2d_block2[0],
+            self.model.encoder.res_block[2].conv2d_block1[0],
+            self.model.encoder.res_block[2].conv2d_block2[0],
+            self.model.encoder.res_block[3].conv2d_block1[0],
+            self.model.encoder.res_block[3].conv2d_block2[0],
+            self.model.encoder.res_block[4].conv2d_block1[0],
+            self.model.encoder.res_block[4].conv2d_block2[0],
+            self.model.encoder.res_block[5].conv2d_block1[0],
+            self.model.encoder.res_block[5].conv2d_block2[0],
+            self.model.encoder.res_block[6].conv2d_block1[0],
+            self.model.encoder.res_block[6].conv2d_block2[0],
+            self.model.encoder.res_block[7].conv2d_block1[0],
+            self.model.encoder.res_block[7].conv2d_block2[0],
+            self.model.encoder.layer18,
+            self.model.decoder.layer19[0],
+            self.model.decoder.layer20[0],
+            self.model.decoder.layer21[0],
+            self.model.decoder.layer22[0],
+            self.model.decoder.layer23[0],
+            self.model.decoder.layer24[0],
+            self.model.decoder.layer25[0],
+            self.model.decoder.layer26[0],
+            self.model.decoder.layer27[0],
+            self.model.decoder.layer28[0],
+            self.model.decoder.layer29[0],
+            self.model.decoder.layer30[0],
+            self.model.decoder.layer31[0],
+            self.model.decoder.layer32[0],
+            self.model.decoder.layer33a[0],  # convT3d
+            self.model.decoder.layer34a[0],  # convT3d
+            self.model.decoder.layer35a[0],  # convT3d
+            self.model.decoder.layer36a[0],  # convT3d
+            self.model.decoder.layer37,  # convT3d
         ]
 
     def update_network_config(
@@ -156,7 +235,7 @@ class GA:
         """
 
         # build model
-        self.model = build_bnn(self.config)
+        self.model = build_gcnet(self.config)
 
         # load model state from checkpoint
         resume = (
@@ -184,15 +263,30 @@ class GA:
         # This is important for hooking, as the hooks are attached
         # to the target layers possibly by their memory addresses.
         self.target_layer = [
-            self.model.encoder.in_conv[0],
-            self.model.encoder.layer2[0],
-            self.model.decoder.layer3[0],
-            self.model.decoder.layer4,
+            self.model.decoder.layer19[0],
+            self.model.decoder.layer20[0],
+            self.model.decoder.layer21[0],
+            self.model.decoder.layer22[0],
+            self.model.decoder.layer23[0],
+            self.model.decoder.layer24[0],
+            self.model.decoder.layer25[0],
+            self.model.decoder.layer26[0],
+            self.model.decoder.layer27[0],
+            self.model.decoder.layer28[0],
+            self.model.decoder.layer29[0],
+            self.model.decoder.layer30[0],
+            self.model.decoder.layer31[0],
+            self.model.decoder.layer32[0],
+            self.model.decoder.layer33a[0],  # convT3d
+            self.model.decoder.layer34a[0],  # convT3d
+            self.model.decoder.layer35a[0],  # convT3d
+            self.model.decoder.layer36a[0],  # convT3d
+            self.model.decoder.layer37,  # convT3d
         ]
 
         print(
-            f"BNN was successfully loaded to {self.device}. \n"
-            + f"BNN model: {resume_path}\n"
+            f"{self.model_name} was successfully loaded to {self.device}. \n"
+            + f"{self.model_name} model: {resume_path}\n"
             + f"binocular interaction: {self.binocular_interaction}\n"
             + f"compile mode: {self.config.compile_mode}\n"
             + f"experiment dir: {self.experiment_dir}\n"
@@ -224,30 +318,42 @@ class GA:
             conv_layer_weights (list): List of weights of convolutional layers.
         """
 
-        names = []
-        params = []
-        for name, param in self.model.named_parameters():
-            names.append(name)
-            params.append(param)
+        # names = []
+        # params = []
+        # for name, param in ga_mono.model.named_parameters():
+        #     names.append(name)
+        #     params.append(param)
 
-        # get index for convolutional layers
-        layer_idx = []
-        for i in range(len(names)):  # gather the first 3 conv layers in [names]
-            if ".0.weight" in names[i] or "layer4.weight" in names[i]:
-                layer_idx.append(i)
+        # # get index for convolutional layers, only decoder
+        # layer_idx = []
+        # for i in range(len(names)):  # gather the first 3 conv layers in [names]
+        #     if (
+        #         "decoder" in names[i] and ".0.weight" in names[i]
+        #     ) or "layer37.weight" in names[i]:
+        #         layer_idx.append(i)
 
-        # get convolutional layer names and weights
+        # get convolutional layer names and weights, only decoder
         conv_layer_names = []
         conv_layer_weights = []
-        for i in layer_idx:
-            conv_layer_names.append(names[i])
+        for name, module in self.model.named_modules():
+            if isinstance(module, nn.Conv3d):
+                conv_layer_names.append(name)
+                conv_layer_weights.append(module.weight)
+            elif isinstance(module, nn.ConvTranspose3d):
+                conv_layer_names.append(name)
+                conv_layer_weights.append(module.weight.transpose(0, 1))
 
-            # if layer4, transpose the weights because it is ConvTranspose3D
-            # whose original shape is [C_in, C_out, d, h, w]
-            # see: https://docs.pytorch.org/docs/stable/generated/torch.nn.ConvTranspose3d.html
-            if "layer4" in names[i]:
-                conv_layer_weights.append(params[i].transpose(0, 1))
-            else:
-                conv_layer_weights.append(params[i])
+        # for i in layer_idx:
+        #     conv_layer_names.append(names[i])
+
+        #     if isinstance(temp[1])
+
+        #     # if layer4, transpose the weights because it is ConvTranspose3D
+        #     # whose original shape is [C_in, C_out, d, h, w]
+        #     # see: https://docs.pytorch.org/docs/stable/generated/torch.nn.ConvTranspose3d.html
+        #     if "layer4" in names[i]:
+        #         conv_layer_weights.append(params[i].transpose(0, 1))
+        #     else:
+        #         conv_layer_weights.append(params[i])
 
         return (conv_layer_names, conv_layer_weights)

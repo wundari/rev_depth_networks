@@ -1,5 +1,4 @@
 # %% load necessary module
-import torch
 from torch import nn, Tensor
 
 

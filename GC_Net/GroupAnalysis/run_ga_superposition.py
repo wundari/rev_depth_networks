@@ -1,11 +1,11 @@
 # %%
 import numpy as np
 
-from config.config import ConfigBNN
+from config.config import ConfigGCNet
 from GroupAnalysis.group_analysis_superposition import GA_Superposition
 
 # %%
-config = ConfigBNN()
+config = ConfigGCNet()
 params_rds = {
     "target_disp": 10,  # RDS target disparity (pix) to be analyzed
     "n_rds_each_disp": 256,  # n_rds for each disparity magnitude in disp_ct_pix
@@ -16,7 +16,7 @@ params_rds = {
     "pedestal_flag": 0,  # 1: use pedestal to ensure rds disparity > 0
     "batch_size_rds": 2,
 }
-config = ConfigBNN()
+config = ConfigGCNet()
 ga_sup = GA_Superposition(config, params_rds)
 
 # %%
@@ -35,3 +35,5 @@ for interaction in interactions:
 
 # %% statistical test
 ga_sup.stat_feat_dim()
+
+# %%

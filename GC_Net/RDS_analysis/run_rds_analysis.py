@@ -1,12 +1,12 @@
 # %%
 
-from config.config import ConfigBNN
+from GC_Net.config.config import ConfigGCNet
 
-from RDS_analysis.rds_analysis import RDSAnalysis
+from GC_Net.RDS_analysis.rds_analysis import RDSAnalysis
 import numpy as np
 
 # %%
-config = ConfigBNN()
+config = ConfigGCNet()
 
 # rds parameters
 params_rds = {
@@ -17,24 +17,24 @@ params_rds = {
     "dotMatch_list": [0.0, 0.5, 1.0],  # dot match
     "background_flag": 1,  # 1: with cRDS background
     "pedestal_flag": 0,  # 1: use pedestal to ensure rds disparity > 0
-    "batch_size_rds": 4,
+    "batch_size_rds": 8,
+    "n_bootstrap": 1000,
 }
 
 rdsa = RDSAnalysis(config, params_rds)
 rdsa.model.eval()
 
-# %% compute model responses to RDSs
+# %%
 rdsa.compute_disp_map_rds_group(
     rdsa.dotDens_list, rdsa.background_flag, rdsa.pedestal_flag
 )
 # %% cross-decoding analysis with SVM
-n_bootstrap = 1000
-rdsa.xDecode(rdsa.dotDens_list, n_bootstrap, rdsa.background_flag)
+rdsa.xDecode(rdsa.dotDens_list, rdsa.n_bootstrap, rdsa.background_flag)
 
 # %% plot cross-decoding performance
 # plot performance at a target dot density
 save_flag = 1
-dotDens = 0.2
+dotDens = 0.3
 rdsa.plotLine_xDecode_at_dotDens(dotDens, save_flag)
 
 # plot performance as a function of dot density
@@ -43,6 +43,10 @@ rdsa.plotLine_xDecode(save_flag)
 rdsa.plotHeat_dispMap(save_flag)
 rdsa.plotHeat_dispMap_avg(save_flag)
 
+# %% average across seed
+dataset_name = "sceneflow_monkaa"
+rdsa.plotLine_xDecode_avg_seed(dataset_name, save_flag)
+
 # %% debug
 import torch
 import torchvision.transforms as transforms
@@ -50,13 +54,13 @@ from torch.utils.data import DataLoader
 from RDS.DataHandler_RDS import RDS_Handler, DatasetRDS
 import matplotlib.pyplot as plt
 import random
-
-from config.config import GCNetconfig
+from config.config import ConfigGCNet
+from utilities.misc import NestedTensor
 
 from RDS_analysis.rds_analysis import RDSAnalysis
 import numpy as np
 
-config = GCNetconfig()
+config = ConfigGCNet()
 
 # rds parameters
 params_rds = {
@@ -68,12 +72,13 @@ params_rds = {
     "background_flag": 1,  # 1: with cRDS background
     "pedestal_flag": 0,  # 1: use pedestal to ensure rds disparity > 0
     "batch_size_rds": 2,
+    "n_bootstrap": 1000,
 }
 
 rdsa = RDSAnalysis(config, params_rds)
 rdsa.model.eval()
 
-seed_number = 35154
+seed_number = config.seed
 
 
 # initialize random seed number for dataloader
@@ -107,15 +112,36 @@ rds_left, rds_right, rds_label = RDS_Handler.generate_rds(
     pedestal_flag,
 )
 
-mean = (0.485, 0.456, 0.406)
-std = (0.229, 0.224, 0.225)
-transform_data = transforms.Compose(
-    [
-        transforms.ToTensor(),
-        transforms.Lambda(lambda t: (t + 1.0) / 2.0),
-        transforms.Normalize(mean, std),
-    ]
-)
+
+class NormalizeRDS:
+    """Normalize signed [-1,1] RGB arrays; no uint8 ToTensor ambiguity/lambda."""
+
+    # def __init__(self):
+
+    # mean = (0.485 * 255.0, 0.456 * 255.0, 0.406 * 255.0)
+    # std = (0.229 * 255.0, 0.224 * 255.0, 0.225 * 255.0)
+    # mean = (0.485, 0.456, 0.406)
+    # std = (0.229, 0.224, 0.225)
+    # mean = np.array([0.5, 0.5, 0.5])
+    # std = np.array([0.5, 0.5, 0.5])
+
+    _mean = torch.tensor([0.485, 0.456, 0.406])[:, None, None]
+    _std = torch.tensor([0.229, 0.224, 0.225])[:, None, None]
+
+    def __call__(self, image):
+        x = torch.as_tensor(np.ascontiguousarray(image), dtype=torch.float32).permute(
+            2, 0, 1
+        )
+        if not torch.isfinite(x).all() or x.min() < -1 or x.max() > 1:
+            raise ValueError("RDS pixels must be finite in [-1,1]")
+
+        # mean = torch.tensor([0.485, 0.456, 0.406])[:, None, None]
+        #         # std = torch.tensor([0.229, 0.224, 0.225])[:, None, None]
+
+        return ((x + 1) / 2 - self._mean) / self._std
+
+
+transform_data = NormalizeRDS()
 
 rds_data = DatasetRDS(rds_left, rds_right, rds_label, transform=transform_data)
 rds_loader = DataLoader(
@@ -124,9 +150,113 @@ rds_loader = DataLoader(
     shuffle=True,
     pin_memory=True,
     drop_last=True,
+    num_workers=0,
     worker_init_fn=seed_worker,
     generator=g,
 )
+
+
+pred_disp = torch.empty(
+    (len(rdsa.disp_ct_pix_list) * rdsa.n_rds_each_disp, rdsa.h_bg, rdsa.w_bg),
+    dtype=torch.float32,
+)
+pred_disp_labels = np.empty(
+    (len(rdsa.disp_ct_pix_list) * rdsa.n_rds_each_disp), dtype=np.int8
+)
+
+# predict disparity map
+rdsa.model.eval()
+# tepoch = tqdm(rds_loader)
+# for i, (inputs_left, inputs_right, disps) in enumerate(tepoch):
+for i in range(len(rds_loader)):
+    inputs_left, inputs_right, disps = next(iter(rds_loader))
+
+    # generate disparity direction
+    ref = disps / 10.0
+
+    # build nested tensor
+    # input_data = NestedTensor(
+    #     left=inputs_left.pin_memory().to(self.config.device, non_blocking=True),
+    #     right=inputs_right.pin_memory().to(
+    #         self.config.device, non_blocking=True
+    #     ),
+    #     ref=ref.pin_memory().to(self.config.device, non_blocking=True),
+    # )
+    if ref.mean() > 0:
+        input_data = NestedTensor(
+            left=inputs_left.pin_memory().to(rdsa.config.device, non_blocking=True),
+            right=inputs_right.pin_memory().to(rdsa.config.device, non_blocking=True),
+            ref=ref.pin_memory().to(rdsa.config.device, non_blocking=True),
+        )
+    else:
+        input_data = NestedTensor(
+            left=inputs_right.pin_memory().to(rdsa.config.device, non_blocking=True),
+            right=inputs_left.pin_memory().to(rdsa.config.device, non_blocking=True),
+            ref=ref.pin_memory().to(rdsa.config.device, non_blocking=True),
+        )
+
+    # model output
+    with torch.autocast(device_type=rdsa.config.device, dtype=torch.bfloat16):
+        disp_pred = rdsa.model(input_data)  # [batch, h, w]
+        # module_outputs = self.compute_layer_activations(
+        #     input_data, self.target_list
+        # )
+        # layer = self.target_list[-1]
+        # # [batch, feat_channel, disp_channel, h, w] => [batch, disp_channel, h, w]
+        # disp_pred = module_outputs[layer].mean(dim=1)
+        # disp_pred = F.softmax(-disp_pred, dim=1)  # [batch, disp_channel, h, w]
+        # # disp_pred = torch.sum(
+        # #     disp_pred * self.model.disp_indices, dim=1
+        # # )  # [batch, h, w]
+        # disp_pred = torch.sum(
+        #     disp_pred
+        #     * self.model.disp_indices
+        #     * input_data.ref.view(-1, 1, 1, 1),
+        #     dim=1,
+        # )
+
+    id_start = i * rdsa.batch_size
+    id_end = id_start + rdsa.batch_size
+    pred_disp_labels[id_start:id_end] = disps
+    pred_disp[id_start:id_end] = disp_pred.detach().float().cpu()
+
+    # tepoch.set_description(
+    #     f"RDS dotMatch: {dotMatch:.2f}, "
+    #     + f"dotDens: {dotDens:.2f}, "
+    #     + f"iter: {i+1}/{len(rds_loader)}"
+    # )
+
+for dm, dotMatch in enumerate(rdsa.dotMatch_list):
+    pred_disp = torch.empty(
+        (
+            len(rdsa.dotDens_list),
+            len(rdsa.disp_ct_pix_list) * rdsa.n_rds_each_disp,
+            rdsa.h_bg,
+            rdsa.w_bg,
+        ),
+        dtype=torch.float32,
+    )
+    pred_disp_labels = np.empty(
+        (len(rdsa.dotDens_list), len(rdsa.disp_ct_pix_list) * rdsa.n_rds_each_disp),
+        dtype=np.int8,
+    )
+    for dd, dotDens in enumerate(rdsa.dotDens_list):
+        a, b = rdsa.compute_disp_map_rds(
+            dotMatch, dotDens, background_flag, pedestal_flag
+        )
+
+        pred_disp[dd], pred_disp_labels[dd] = rdsa.compute_disp_map_rds(
+            dotMatch, dotDens, background_flag, pedestal_flag
+        )
+
+    np.save(
+        f"{self.xDecode_dir}/pred_disp_{self.rds_type[dm]}.npy",
+        pred_disp.cpu().detach().numpy(),
+    )
+    np.save(
+        f"{self.xDecode_dir}/pred_disp_labels_{self.rds_type[dm]}.npy",
+        pred_disp_labels,
+    )
 
 # %%
 from tqdm import tqdm
@@ -144,9 +274,28 @@ for i, (inputs_left, inputs_right, disps) in enumerate(tepoch):
 inputs_left, inputs_right, disps = next(iter(rds_loader))
 print(disps)
 
-# fig, axes = plt.subplots(nrows=1, ncols=2)
-# axes[0].imshow(rds_left[0], cmap="gray", vmin=-1, vmax=1)
-# axes[1].imshow(rds_right[0], cmap="gray", vmin=-1, vmax=1)
+# visualize rds
+img_left = (rds_left[0] * 128 + 127).astype(np.int32)
+img_right = (rds_right[0] * 128 + 127).astype(np.int32)
+
+fig, axes = plt.subplots(nrows=1, ncols=2)
+fig.text(
+    0.5,
+    0.7,
+    f"RDS, dotMatch: {dotMatch}, dotDens: {dotDens}",
+    horizontalalignment="center",
+)
+axes[0].imshow(img_left, cmap="gray", vmin=-1, vmax=1)
+axes[1].imshow(img_right, cmap="gray", vmin=-1, vmax=1)
+axes[0].set_title("Left")
+axes[1].set_title("Right")
+
+for axes in axes.ravel():
+    axes.set_axis_off()
+
+plt.savefig(
+    f"rds_sample_images/RDS_dotMatch{dotMatch}.pdf", dpi=600, bbox_inches="tight"
+)
 
 
 # %%

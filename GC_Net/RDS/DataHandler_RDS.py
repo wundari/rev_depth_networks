@@ -2,18 +2,14 @@
 import numpy as np
 
 import torch
-import torchvision.transforms as transforms
 from torch.utils.data import Dataset
-from torch.utils.data import DataLoader
 
-from RDS.RDS_v3 import RDS
+from GC_Net.RDS.RDS_v3 import RDS
 
 # reproducibility
 import random
-from config.config import ConfigBNN
 
-cfg = ConfigBNN()
-seed_number = cfg.seed  # 12321
+seed_number = 3407  # 12321
 torch.manual_seed(seed_number)
 np.random.seed(seed_number)
 
@@ -182,20 +178,19 @@ class RDS_Handler:
         if background_flag:  # generate RDSs with cRDS background
             rds_batch_left, rds_batch_right = rds.create_rds_batch(
                 disp_ct_pix_list, dotMatch_ct
-            )
+            )  # [batch_size, len(disp_ct_pix_list), h, w]
             bg_message = "with cRDS background"
         else:  # without cRDS background
             rds_batch_left, rds_batch_right = rds.create_rds_without_bg_batch(
                 disp_ct_pix_list, dotMatch_ct
-            )
+            )  # [batch_size, len(disp_ct_pix), h, w]
             bg_message = "without cRDS background"
-        # rds_batch_right : [batch_size, len(disp_ct_pix), h, w]
 
-        # remapping rds into [len(disp_ct_pix) * batch_size, h, w, n_channels]
+        # [batch_size, len(disp_ct_pix), h, w] => [len(disp_ct_pix) * batch_size, h, w, n_rgb_channels]
         n_channels = 3  # rgb channels
-        rds_left = np.zeros((n_rds, rds.h_bg, rds.w_bg, n_channels), dtype=np.float32)
-        rds_right = np.zeros((n_rds, rds.h_bg, rds.w_bg, n_channels), dtype=np.float32)
-        rds_disp = np.zeros(n_rds, dtype=np.int8)
+        rds_left = np.empty((n_rds, rds.h_bg, rds.w_bg, n_channels), dtype=np.float32)
+        rds_right = np.empty((n_rds, rds.h_bg, rds.w_bg, n_channels), dtype=np.float32)
+        rds_disp = np.empty(n_rds, dtype=np.int8)
         count = 0
         for d in range(len(disp_ct_pix_list)):
             print(
@@ -236,9 +231,19 @@ class RDS_Handler:
 
     @staticmethod
     def generate_rds_v2(
-        dotMatch_ct, dotDens, disp_ct_pix_list, n_rds_each_disp, background_flag
+        dotMatch_ct,
+        dotDens,
+        disp_ct_pix_list,
+        n_rds_each_disp,
+        background_flag,
+        pedestal_flag,
     ):
         """
+        V2 swaps the left and right images such that positive disparity = near (pixels
+        on the left images are shifted to the left to get their
+        corresponding pixels on right images),
+        negative disparity = far (pixels on the left images are shifted to the right
+        to get their corresponding pixels on the right images)
         generate RDSs with the following parameters
 
         Args:
@@ -261,10 +266,16 @@ class RDS_Handler:
                 0: without cRDS background
                 1: with cRDS background
 
+            pedestal_flag (binary): a flag indicating with or without pedestal.
+                pedestal here means that the whole RDSs are shifted such that
+                the smallest disparity = 0.
+                0: without pedestal
+                1: with pedestal
+
         Returns:
             rds_left = np.zeros((n_rds, rds.h_bg, rds.w_bg, n_channels), dtype=np.float32)
             rds_right = np.zeros((n_rds, rds.h_bg, rds.w_bg, n_channels), dtype=np.float32)
-            rds_disp = np.zeros((n_rds, 2), dtype=np.int8)  # colnames: [rds_type, disp]
+            rds_disp = np.zeros(n_rds, dtype=np.int8)
         """
         overlap_flag = 1  # 0: dots are not allowed to overlap; 1: otherwise
 
@@ -283,23 +294,16 @@ class RDS_Handler:
             bg_message = "without cRDS background"
         # rds_batch_right : [batch_size, len(disp_ct_pix), h, w]
 
-        # remapping rds into [len(disp_ct_pix) * batch_size, h, w, n_channels]
+        # [batch_size, len(disp_ct_pix), h, w] => [len(disp_ct_pix) * batch_size, h, w, n_rgb_channels]
         n_channels = 3  # rgb channels
-        rds_left = np.zeros((n_rds, rds.h_bg, rds.w_bg, n_channels), dtype=np.float32)
-        rds_right = np.zeros((n_rds, rds.h_bg, rds.w_bg, n_channels), dtype=np.float32)
-        rds_disp = np.zeros((n_rds, 2), dtype=np.int8)  # colnames: [rds_type, disp]
-        # rds_type: 0 = ards; 1= hmrds; 2 = crds
-        if dotMatch_ct == 0:
-            rds_type = 0  # ards
-        elif dotMatch_ct == 0.5:
-            rds_type = 1  # hmrds
-        elif dotMatch_ct == 1:
-            rds_type = 2  # crds
+        rds_left = np.empty((n_rds, rds.h_bg, rds.w_bg, n_channels), dtype=np.float32)
+        rds_right = np.empty((n_rds, rds.h_bg, rds.w_bg, n_channels), dtype=np.float32)
+        rds_disp = np.empty(n_rds, dtype=np.int8)
         count = 0
         for d in range(len(disp_ct_pix_list)):
             print(
                 f"generating rds: {bg_message}, "
-                + f"dot match: {dotMatch_ct}, "
+                + f"dot match: {dotMatch_ct:.2f}, "
                 + f"disparity: {disp_ct_pix_list[d]}"
             )
             # if disp_ct_pix_list[d] < 0:
@@ -310,167 +314,24 @@ class RDS_Handler:
             #     depth_label = 1  # crossed-disparity (near)
 
             for t in range(n_rds_each_disp):
-                temp = rds_batch_left[t, d]
-                # shift the whole rds to set near disp at 0 disp
-                # temp = np.roll(temp, disp_ct_pix_list[0], axis=1)
+                # rds left
+                temp = rds_batch_right[t, d]
                 rds_left[count, :, :, 0] = temp
                 rds_left[count, :, :, 1] = temp
                 rds_left[count, :, :, 2] = temp
 
-                temp = rds_batch_right[t, d]
-                # temp = np.roll(temp, disp_ct_pix_list[1], axis=1)
+                temp = rds_batch_left[t, d]
+                # using pedestal
+                if pedestal_flag:
+                    # shift the whole rds to set near disp at 0 disp
+                    temp = np.roll(temp, disp_ct_pix_list[1], axis=1)
                 rds_right[count, :, :, 0] = temp
                 rds_right[count, :, :, 1] = temp
                 rds_right[count, :, :, 2] = temp
 
-                rds_disp[count, 0] = rds_type
-                rds_disp[count, 1] = disp_ct_pix_list[d]
+                # rds_label[count] = depth_label
+                rds_disp[count] = disp_ct_pix_list[d]
 
                 count += 1
 
         return rds_left, rds_right, rds_disp
-
-    def _rds_dataloader(self, rds_left, rds_right, rds_disp, batch_size):
-        # transform rds to tensor and in range [0, 1]
-        transform_data = transforms.Compose(
-            [transforms.ToTensor(), transforms.Lambda(lambda t: (t + 1.0) / 2.0)]
-        )
-        rds_data = DatasetRDS(rds_left, rds_right, rds_disp, transform=transform_data)
-        rds_loader = DataLoader(
-            rds_data,
-            batch_size=batch_size,
-            shuffle=False,
-            pin_memory=True,
-            drop_last=True,
-            num_workers=2,
-            worker_init_fn=seed_worker,
-            generator=g,
-        )
-
-        return rds_loader
-
-    def generate_rds_dataloader(self, dotDens, batch_size):
-        # generate ards
-        dotMatch_ct = 0
-        # rds_left, rds_right: [len(disp_ct_pix_list) * batch_size, h, w, n_channels]
-        # rds_disp : [len(disp_ct_pix) * batch_size]
-        ards_left, ards_right, ards_disp = self.generate_rds_v2(
-            dotMatch_ct,
-            dotDens,
-            self.disp_ct_pix_list,
-            self.n_rds_each_disp,
-            self.background_flag,
-        )
-
-        # generate hmrds
-        dotMatch_ct = 0.5
-        # rds_left, rds_right: [len(disp_ct_pix_list) * batch_size, h, w, n_channels]
-        # rds_disp : [len(disp_ct_pix) * batch_size]
-        hmrds_left, hmrds_right, hmrds_disp = self.generate_rds_v2(
-            dotMatch_ct,
-            dotDens,
-            self.disp_ct_pix_list,
-            self.n_rds_each_disp,
-            self.background_flag,
-        )
-
-        # generate crds
-        dotMatch_ct = 1
-        # rds_left, rds_right: [len(disp_ct_pix_list) * batch_size, h, w, n_channels]
-        # rds_disp : [len(disp_ct_pix) * batch_size]
-        crds_left, crds_right, crds_disp = self.generate_rds_v2(
-            dotMatch_ct,
-            dotDens,
-            self.disp_ct_pix_list,
-            self.n_rds_each_disp,
-            self.background_flag,
-        )
-
-        # concatenate all rds
-        rds_left = np.concatenate([ards_left, hmrds_left, crds_left])
-        rds_right = np.concatenate([ards_right, hmrds_right, crds_right])
-        rds_disp = np.concatenate([ards_disp, hmrds_disp, crds_disp])
-
-        # create dataloader for ards
-        rds_loader = self._rds_dataloader(rds_left, rds_right, rds_disp, batch_size)
-
-        return rds_loader
-
-    @staticmethod
-    def create_ground_truth(disp_ct_pix, n_rds, background_flag):
-        if background_flag:  # rds with crds background
-            rds_bg = np.zeros((n_rds, H_BG, W_BG), dtype=np.int32)
-
-            # calculate center position in pixel
-            center = (H_BG // 2, W_BG // 2)
-
-            # calculate the starting and the ending coordinate of the rds center
-            row_ct_start = center[0] - H_CT // 2
-            row_ct_end = row_ct_start + H_CT + 1
-            col_ct_start = center[1] - W_CT // 2
-            col_ct_end = col_ct_start + W_CT + 2
-
-            rds_bg[:, row_ct_start:row_ct_end, col_ct_start:col_ct_end] = disp_ct_pix
-
-        else:
-            rds_bg = disp_ct_pix * np.ones((n_rds, H_BG, W_BG), dtype=np.int32)
-
-        return rds_bg
-
-    # def set_sceneflow_val_loader(self):
-    #     train_list = [self._dataset_to_process]
-    #     val_list = [self._dataset_to_process]
-    #     # train_list = ["driving", "flying", "monkaa"]
-    #     # val_list = ["driving", "flying", "monkaa"]
-    #     (
-    #         _,
-    #         _,
-    #         file_train_disp,
-    #         file_val_left,
-    #         file_val_right,
-    #         file_val_disp,
-    #     ) = generate_image_paths(train_list, val_list, flip_input=1)
-
-    #     ## data normalization notes: https://cs231n.github.io/neural-networks-2/
-    #     # a = np.zeros((len(imgs_left), 540, 960, 3), dtype=np.float32)
-    #     # for i in range(len(imgs_left)):
-    #     #     a[i] = imgs_left[i]
-    #     # DATA_MEANS = [a[:, :, :, 0].mean(), a[:, :, :, 1].mean(), a[:, :, :, 2].mean()]
-    #     # DATA_STD = [a[:, :, :, 0].std(), a[:, :, :, 1].std(), a[:, :, :, 2].std()]
-    #     # DATA_MEANS = np.array([0.32, 0.32, 0.28])
-    #     # DATA_STD = np.array([0.28, 0.27, 0.25])
-    #     DATA_MEANS = np.array([0.5, 0.5, 0.5])
-    #     DATA_STD = np.array([0.5, 0.5, 0.5])
-
-    #     transform_data = transforms.Compose(
-    #         [transforms.ToTensor(), transforms.Normalize(DATA_MEANS, DATA_STD)]
-    #     )
-
-    #     # get validation dataset
-    #     n_train = int(len(file_train_disp) * 0.8)
-    #     train_id = np.random.choice(
-    #         np.arange(len(file_train_disp)), n_train, replace=False
-    #     )
-    #     val_id = np.setdiff1d(np.arange(len(file_train_disp)), train_id)
-    #     patch_data = DatasetVal(
-    #         [file_val_left[i] for i in val_id],
-    #         [file_val_right[i] for i in val_id],
-    #         [file_val_disp[i] for i in val_id],
-    #         self.h_bg,
-    #         self.w_bg,
-    #         self.c_disp_shift,
-    #         transform=transform_data,
-    #         flip_input=1,
-    #     )
-    #     val_loader = DataLoader(
-    #         patch_data,
-    #         batch_size=self.batch_size,
-    #         shuffle=True,
-    #         pin_memory=True,
-    #         drop_last=True,
-    #         num_workers=1,
-    #         worker_init_fn=seed_worker,
-    #         generator=g,
-    #     )
-
-    #     return val_loader
