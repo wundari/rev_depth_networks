@@ -1,7 +1,7 @@
 def main():
     # load necessary modules
     from engine.engine_gcnet import EngineGCNet
-    from GC_Net.config.config import ConfigGCNet
+    from config.config_gcnet import ConfigGCNet
 
     # set up DNN
     config = ConfigGCNet()

@@ -4,7 +4,7 @@ BNN training/evaluation engine.
 
 """
 
-from BNN.config.config import ConfigBNN
+from config.config_bnn import ConfigBNN
 from BNN.modules.bnn import build_bnn
 
 from engine.engine_base import EngineBase

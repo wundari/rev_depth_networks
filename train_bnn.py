@@ -3,7 +3,7 @@
 
 def main():
     from engine.engine_bnn import EngineBNN
-    from BNN.config.config import ConfigBNN
+    from config.config_bnn import ConfigBNN
 
     # set up DNN
     config = ConfigBNN()

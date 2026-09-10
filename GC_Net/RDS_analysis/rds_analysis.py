@@ -12,7 +12,7 @@ import os
 import glob
 from pathlib import Path
 
-from GC_Net.engine.engine_gcnet import Engine
+from engine.engine_gcnet import EngineGCNet
 from GC_Net.RDS.DataHandler_RDS import RDS_Handler, DatasetRDS
 from GC_Net.SVM.svm_analysis_v4 import *
 
@@ -44,7 +44,7 @@ class NormalizeRDS:
         return ((x + 1) / 2 - self._mean) / self._std
 
 
-class RDSAnalysis(Engine):
+class RDSAnalysis(EngineGCNet):
 
     def __init__(self, config, params_rds: dict) -> None:
 

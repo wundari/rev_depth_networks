@@ -1,6 +1,6 @@
 # %%
 
-from GC_Net.config.config import ConfigGCNet
+from config.config_gcnet import ConfigGCNet
 
 from GC_Net.RDS_analysis.rds_analysis import RDSAnalysis
 import numpy as np

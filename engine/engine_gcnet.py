@@ -3,7 +3,7 @@
 GCNet training/evaluation engine.
 """
 
-from GC_Net.config.config import ConfigGCNet
+from config.config_gcnet import ConfigGCNet
 from GC_Net.modules.gcnet import build_gcnet
 
 from engine.engine_base import EngineBase

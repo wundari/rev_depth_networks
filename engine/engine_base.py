@@ -23,9 +23,9 @@ from pathlib import Path
 from dataset.scene_flow import SceneFlowFlyingThingsDataset
 from dataset.scene_flow import SceneFlowMonkaaDataset
 from dataset.loading import make_loader, make_train_eval_loader, batches_for_evaluation
+from config.config_bnn import ConfigBNN
+from config.config_gcnet import ConfigGCNet
 from utilities.misc import NestedTensor
-from BNN.config.config import ConfigBNN
-from GC_Net.config.config import ConfigGCNet
 
 
 # %%
