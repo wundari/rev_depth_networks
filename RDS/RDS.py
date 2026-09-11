@@ -1,14 +1,9 @@
 """
-File: /home/wundari/NVME/fmri_data_processing/bw18_005_2/Codes/Python/CMM/RDS/RDS_v2.py
-Project: /home/wundari/NVME/fmri_data_processing/bw18_005_2/Codes/Python/CMM/RDS
 Created Date: 2023-03-29 16:22:00
 Author: Bayu G. Wundari
 -----
 Last Modified: 2023-03-29 16:22:20
 Modified By: Bayu G. Wundari
------
-Copyright (c) 2023 National Institute of Information and Communications Technology (NICT)
-
 -----
 HISTORY:
 Date    	By	Comments

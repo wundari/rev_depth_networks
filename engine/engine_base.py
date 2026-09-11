@@ -17,6 +17,8 @@ import random
 import matplotlib.pyplot as plt
 import seaborn as sns
 from tqdm import tqdm
+from datetime import datetime
+from timeit import default_timer as timer
 from natsort import natsorted
 from pathlib import Path
 
@@ -54,16 +56,22 @@ class EngineBase:
         # dataset directory
         self.make_dirs()
 
+        # save config file
+        self.save_config()
+
         # load model
         self.model = self._build_model(config)
 
         # load pre-trained BNN, if provided
         if config.load_state:
             print(
-                f"Load pretrained {self.model_name}:\n"
-                + f"Binocular interaction: {config.binocular_interaction}\n"
-                + f"Experiment id: {config.experiment_id}\n"
-                + f"Model: {config.resume}"
+                "==============================================================\n"
+                + f"Load pretrained {self.model_name}: \n"
+                + "==============================================================\n"
+                + f"Binocular interaction: {config.binocular_interaction} \n"
+                + f"Experiment id: {config.experiment_id} \n"
+                + f"Model: {config.resume} \n"
+                + "==============================================================\n"
             )
             self.experiment_dir = os.path.join(
                 self.save_dir,
@@ -97,7 +105,8 @@ class EngineBase:
     def get_train_params(self):
         print(
             "==============================================================\n"
-            "Training parameters: \n"
+            + "Training parameters: \n"
+            + "==============================================================\n"
             + f"{self.model_name} was successfully loaded to {self.device}\n"
             + f"Binocular interaction: {self.config.binocular_interaction}\n"
             + f"Seed: {self.config.seed}\n"
@@ -140,13 +149,19 @@ class EngineBase:
         if self.config.load_state:
             run_id = self.config.experiment_id
         else:
-            run_id = int(runs[-1].split("_")[-1]) + 1 if runs else 0
+            # run_id = int(runs[-1].split("_")[-1]) + 1 if runs else 0
+            run_id = self.config.seed
         self.experiment_dir = os.path.join(
             self.save_dir,
             f"experiment_{run_id}",
         )
         if not os.path.exists(self.experiment_dir):
             os.makedirs(self.experiment_dir)
+
+        # pred_images directory
+        self.pred_images_dir = os.path.join(self.experiment_dir, "pred_images")
+        if not os.path.exists(self.pred_images_dir):
+            os.makedirs(self.pred_images_dir)
 
     def _build_model(self, config: ConfigBNN | ConfigGCNet) -> nn.Module:
         raise NotImplementedError
@@ -581,6 +596,11 @@ class EngineBase:
         total_steps = self.config.epochs * len(train_loader)
         self._scaler = scaler
 
+        # start training!
+        now = datetime.now()
+        time_start = now.strftime("%H:%M:%S")
+        t_start = timer()
+
         for epoch in range(start_epoch, self.config.epochs):
 
             # Epoch-specific seeds allow reproducible epoch-boundary resume,
@@ -653,8 +673,8 @@ class EngineBase:
                 # Updates the scale for next iteration.
                 scaler.update()
 
-                # logging
-                if step % self.config.log_interval == 0:
+                # tqdm logging
+                if self.config.log_tqdm and step % self.config.log_interval == 0:
                     progress.set_description(
                         f"step {step}/{total_steps} | train loss: {loss_value:.4f} |"
                         f"train 3-pix acc: {acc_train.item():.4f} | lr: {lr:.4e}"
@@ -678,7 +698,7 @@ class EngineBase:
                     self._save_history()
 
                     # save best model
-                    if val_loss < self.best_loss:
+                    if (val_loss < self.best_loss) and (epoch - 1 > 5):
                         self.best_loss = val_loss
                         self.save_checkpoint(epoch, step, optimizer, best=True)
 
@@ -690,7 +710,14 @@ class EngineBase:
                         self._save_prediction_snapshot(test_loader)
 
             # save model each epoch
-            self.save_checkpoint(epoch, step, optimizer)
+            if epoch - 1 > 5:
+                self.save_checkpoint(epoch, step, optimizer)
+
+        t_end = timer()
+        now = datetime.now()
+        time_end = now.strftime("%H:%M:%S")
+        dur = (t_end - t_start) / 60.0
+        print(f"Training has completed: [{time_start} -> {time_end}] [{dur:.2f} mins]")
 
         return self.history
 

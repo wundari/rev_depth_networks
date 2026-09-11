@@ -12,7 +12,7 @@ def make_loader(dataset, config, *, training=False, seed_offset=0):
         raise ValueError("num_workers must be nonnegative")
     options = dict(
         batch_size=config.batch_size if training else config.batch_size_val,
-        shuffle=False,
+        shuffle=False if training else True,
         sampler=(
             torch.utils.data.RandomSampler(
                 dataset,
@@ -30,8 +30,8 @@ def make_loader(dataset, config, *, training=False, seed_offset=0):
         options.update(
             persistent_workers=config.persistent_workers,
             prefetch_factor=config.prefetch_factor,
-            multiprocessing_context="spawn",
-            timeout=getattr(config, "loader_timeout", 120),
+            # multiprocessing_context="spawn",
+            # timeout=getattr(config, "loader_timeout", 120),
         )
     return DataLoader(dataset, **options)
 

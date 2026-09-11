@@ -3,7 +3,7 @@
 import numpy as np
 
 from RDS.DataHandler_RDS import *
-from RDS.RDS_v3 import RDS
+from RDS.RDS import RDS
 
 import torch
 import torch.nn.functional as F
@@ -1443,9 +1443,9 @@ def rdm_all_conditions(dotDens_list, n_rds_each_disp):
             col_end = col_start + len(dotDens_list)
             for layer in range(n_monolayers):
                 temp = rdm_layers[0][layer]
-                rdm_all_layers[
-                    count_layer, :, row_start:row_end, col_start:col_end
-                ] = temp
+                rdm_all_layers[count_layer, :, row_start:row_end, col_start:col_end] = (
+                    temp
+                )
 
                 count_layer += 1
 
@@ -1495,9 +1495,9 @@ def rdm_all_conditions(dotDens_list, n_rds_each_disp):
             col_end = col_start + len(dotDens_list)
             for layer in range(n_monolayers):
                 temp = rdm_layers[0][layer]
-                rdm_all_layers[
-                    count_layer, :, row_start:row_end, col_start:col_end
-                ] = temp
+                rdm_all_layers[count_layer, :, row_start:row_end, col_start:col_end] = (
+                    temp
+                )
 
                 count_layer += 1
 
@@ -1547,9 +1547,9 @@ def rdm_all_conditions(dotDens_list, n_rds_each_disp):
             col_end = col_start + len(dotDens_list)
             for layer in range(n_binolayers):
                 temp = rdm_layers[0][layer]
-                rdm_all_layers[
-                    count_layer, :, row_start:row_end, col_start:col_end
-                ] = temp
+                rdm_all_layers[count_layer, :, row_start:row_end, col_start:col_end] = (
+                    temp
+                )
 
                 count_layer += 1
 

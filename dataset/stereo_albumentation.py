@@ -84,14 +84,22 @@ def horizontal_flip(
     return img_left, img_right, occ, occ_right, disp, disp_right
 
 
-def random_crop(min_crop_height, min_crop_width, input_data, c_disp_shift, split,
-                reference=None, rng=None):
+def random_crop(
+    min_crop_height,
+    min_crop_width,
+    input_data,
+    c_disp_shift,
+    split,
+    reference=None,
+    rng=None,
+):
     """Uniform valid stereo crop, with the original signed disparity convention.
 
     ``reference`` optionally selects the eye before loading its PFM file.
     A local RNG allows repeatable evaluation without changing training randomness.
     """
     rng = random if rng is None else rng
+
     h, w = input_data["left"].shape[:2]
     ch, cw = min_crop_height, min_crop_width
     if input_data["right"].shape[:2] != (h, w):
@@ -102,6 +110,7 @@ def random_crop(min_crop_height, min_crop_width, input_data, c_disp_shift, split
         reference = 1 if rng.random() <= 0.5 else -1
     if reference not in (1, -1):
         raise ValueError("reference must be 1 or -1")
+
     shift = c_disp_shift * 44.0
     if not np.isfinite(shift):
         raise ValueError("Disparity shift must be finite")
@@ -110,19 +119,23 @@ def random_crop(min_crop_height, min_crop_width, input_data, c_disp_shift, split
     low, high = max(0, delta), min(w - cw, w - cw + delta)
     if low > high:
         raise ValueError("No valid stereo crop for this width and disparity shift")
+
     x = rng.randint(low, high)
     y = rng.randint(0, h - ch)
     source = input_data["disp"] if reference == 1 else input_data["disp_right"]
     if source.shape != (h, w):
         raise ValueError("Selected disparity map must match the source image")
+
     left, right = input_data["left"], input_data["right"]
     anchor, other = (left, right) if reference == 1 else (right, left)
     input_data["left"] = crop(anchor, x, y, x + cw, y + ch)
     input_data["right"] = crop(other, x - delta, y, x - delta + cw, y + ch)
+
     # Keep the original full-image width as the clipping bound.
     shifted = crop(source, x, y, x + cw, y + ch) - offset
     input_data["disp"] = np.minimum(shifted, w)
     input_data["ref"] = reference
+
     return input_data
 
 
@@ -271,7 +284,9 @@ class Normalize(StereoTransform):
 
     def apply(self, image, **params):
         mean = np.asarray(self.mean, dtype=np.float32) * self.max_pixel_value
-        scale = np.reciprocal(np.asarray(self.std, dtype=np.float32) * self.max_pixel_value)
+        scale = np.reciprocal(
+            np.asarray(self.std, dtype=np.float32) * self.max_pixel_value
+        )
         return (image.astype(np.float32) - mean) * scale
 
     def get_transform_init_args_names(self):
@@ -395,9 +410,15 @@ class RGBShiftStereo(StereoTransformAsym):
         b_shift_l = self.py_random.uniform(self.b_shift_limit[0], self.b_shift_limit[1])
 
         if self.asym():
-            r_shift_r = self.py_random.uniform(self.r_shift_limit[0], self.r_shift_limit[1])
-            g_shift_r = self.py_random.uniform(self.g_shift_limit[0], self.g_shift_limit[1])
-            b_shift_r = self.py_random.uniform(self.b_shift_limit[0], self.b_shift_limit[1])
+            r_shift_r = self.py_random.uniform(
+                self.r_shift_limit[0], self.r_shift_limit[1]
+            )
+            g_shift_r = self.py_random.uniform(
+                self.g_shift_limit[0], self.g_shift_limit[1]
+            )
+            b_shift_r = self.py_random.uniform(
+                self.b_shift_limit[0], self.b_shift_limit[1]
+            )
         else:
             r_shift_r = r_shift_l
             g_shift_r = g_shift_l
@@ -447,17 +468,15 @@ class RandomBrightnessContrastStereo(StereoTransformAsym):
         self.brightness_by_max = brightness_by_max
 
     def apply_l(self, img, alpha_l=1.0, beta_l=0.0, **params):
-        return _brightness_contrast(
-            img, alpha_l, beta_l, self.brightness_by_max
-        )
+        return _brightness_contrast(img, alpha_l, beta_l, self.brightness_by_max)
 
     def apply_r(self, img, alpha_r=1.0, beta_r=0.0, **params):
-        return _brightness_contrast(
-            img, alpha_r, beta_r, self.brightness_by_max
-        )
+        return _brightness_contrast(img, alpha_r, beta_r, self.brightness_by_max)
 
     def get_params_dependent_on_data(self, params, data):
-        alpha_l = 1.0 + self.py_random.uniform(self.contrast_limit[0], self.contrast_limit[1])
+        alpha_l = 1.0 + self.py_random.uniform(
+            self.contrast_limit[0], self.contrast_limit[1]
+        )
         beta_l = 0.0 + self.py_random.uniform(
             self.brightness_limit[0], self.brightness_limit[1]
         )
@@ -529,6 +548,11 @@ def aligned_random_crop(height, width, input_data, split):
         return input_data
     h, w = input_data["left"].shape[:2]
     x1, y1, x2, y2 = get_random_crop_coords(h, w, height, width)
-    return {key: crop(value, x1, y1, x2, y2)
-            if isinstance(value, np.ndarray) and value.shape[:2] == (h, w) else value
-            for key, value in input_data.items()}
+    return {
+        key: (
+            crop(value, x1, y1, x2, y2)
+            if isinstance(value, np.ndarray) and value.shape[:2] == (h, w)
+            else value
+        )
+        for key, value in input_data.items()
+    }

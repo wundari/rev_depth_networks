@@ -114,13 +114,14 @@ class RDSAnalysis(EngineBase):
 
     def get_rds_analysis_params(self):
         print(
-            "==================================================================\n"
-            + "Parameters used for RDS analysis: \n"
+            "==============================================================\n"
+            + "RDS analysis parameters: \n"
+            + "==============================================================\n"
             + f"Batch size RDS: {self.batch_size_rds} \n"
             + f"Disparity targets: [-{self.target_disp}, {self.target_disp}] pixels \n"
             + f"Number of RDS for each disparity target: {self.n_rds_each_disp} \n"
             + f"Number of bootstrap for cross-decoding analysis: {self.n_bootstrap} \n"
-            + "==================================================================\n"
+            + "==============================================================\n"
         )
 
     def make_rds_dirs(self):

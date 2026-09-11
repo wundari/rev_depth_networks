@@ -16,7 +16,7 @@ class Config:
     lr: float = 6e-4
     # lr_decay_rate: float = 0.99
     max_lr: float = 6e-4  # 6e-4
-    min_lr: float = 3e-5
+    min_lr: float = 6e-5
     warmup_steps: int = 250
 
     # dataset parameter
@@ -46,12 +46,13 @@ class Config:
     elif dataset == "sceneflow_flying":
         epochs: int = 5
 
-    log_interval: int = 50  # interval for tqdm logging
+    log_tqdm: bool = False  # whether to monitor loss values using tqdm
+    log_interval: int = 100  # interval for tqdm logging
     eval_interval: int = 500  # interval for calculating validation error
     n_iter_eval: int = 400  # the number of iterations for validation
     save_snapshot: bool = True  # whether to save predicted disparity map
     snapshot_interval: int = (
-        1000  # interval for visualizing the predicted disparity map
+        2500  # interval for visualizing the predicted disparity map
     )
     clip_max_norm: float = 1.0  # gradient clipping max norm
     device: str = (

@@ -312,23 +312,31 @@ def split_sequences(paths, config, split, *, flying=False):
     FlyingThings official TEST is reserved for testing; validation is held
     out from TRAIN. Monkaa is split into train/validation/test sequences.
     """
+
     if split not in {"train", "validation", "test"}:
         raise ValueError(f"Unknown split: {split}")
     if flying and split == "test":
         return paths
+
     groups = sorted({str(Path(p).parent.parent) for p in paths})
     random.Random(config.split_seed).shuffle(groups)
-    n = len(groups)
-    vf, tf = config.validation_fraction, (0 if flying else config.test_fraction)
-    if not (0 < vf < 1 and 0 <= tf < 1 and vf + tf < 1):
+
+    n_total = len(groups)
+    val_frac = config.validation_fraction
+    test_frac = 0 if flying else config.test_fraction
+    if not (0 < val_frac < 1 and 0 <= test_frac < 1 and val_frac + test_frac < 1):
         raise ValueError("Invalid validation/test fractions")
-    nv, nt = max(1, round(n * vf)), (max(1, round(n * tf)) if tf else 0)
-    if n <= nv + nt:
+
+    n_val = max(1, round(n_total * val_frac))
+    n_test = max(1, round(n_total * test_frac)) if test_frac else 0
+    if n_total <= n_val + n_test:
         raise ValueError("Not enough sequences for disjoint dataset splits")
+
     selected = {
-        "validation": groups[:nv],
-        "test": groups[nv : nv + nt],
-        "train": groups[nv + nt :],
+        "validation": groups[:n_val],
+        "test": groups[n_val : n_val + n_test],
+        "train": groups[n_val + n_test :],
     }[split]
     selected = set(selected)
+
     return [p for p in paths if str(Path(p).parent.parent) in selected]
