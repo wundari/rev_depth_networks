@@ -36,11 +36,13 @@ class EngineBase:
         self.config = config
         self.model_name = config.model_name
         self.device = config.device
+
         random.seed(config.seed)
         np.random.seed(config.seed)
         torch.manual_seed(config.seed)
         torch.backends.cudnn.deterministic = config.deterministic
         torch.backends.cudnn.benchmark = not config.deterministic
+
         if config.amp_dtype not in {"float32", "float16", "bfloat16"}:
             raise ValueError("Unknown amp_dtype")
         if torch.device(self.device).type == "cuda" and config.amp_dtype == "bfloat16":
@@ -50,49 +52,11 @@ class EngineBase:
         self.w = config.img_width
 
         # dataset directory
-        # parent_folder = "/media/wundari/S990Pro2_4TB"
-        parent_folder = os.path.abspath(f"{os.curdir}/..")
-        if config.dataset == "sceneflow_flying":
-            self.datadir = f"{parent_folder}/Dataset/SceneFlow_complete/FlyingThings3D/"
-        elif config.dataset == "sceneflow_monkaa":
-            self.datadir = f"{parent_folder}/Dataset/SceneFlow_complete/Monkaa/"
-        else:
-            raise ValueError(f"Unsupported dataset: {config.dataset}")
-        if config.dataset_directory:
-            self.datadir = os.path.abspath(config.dataset_directory)
-
-        # saving directory
-        self.save_dir = os.path.join(
-            f"{self.model_name}/run",
-            config.dataset,
-            f"bino_interaction_{config.binocular_interaction}",
-        )
-        if not os.path.exists(self.save_dir):
-            os.makedirs(self.save_dir)
-
-        # experiment directory
-        runs = natsorted(glob.glob(os.path.join(self.save_dir, "experiment_*")))
-        if config.load_state:
-            run_id = config.experiment_id
-        else:
-            run_id = int(runs[-1].split("_")[-1]) + 1 if runs else 0
-        self.experiment_dir = os.path.join(
-            self.save_dir,
-            f"experiment_{run_id}",
-        )
-        if not os.path.exists(self.experiment_dir):
-            os.makedirs(self.experiment_dir)
-
-        # save config file
-        self.save_config()
-
-        # pred_images directory
-        self.pred_images_dir = os.path.join(self.experiment_dir, "pred_images")
-        if not os.path.exists(self.pred_images_dir):
-            os.makedirs(self.pred_images_dir)
+        self.make_dirs()
 
         # load model
         self.model = self._build_model(config)
+
         # load pre-trained BNN, if provided
         if config.load_state:
             print(
@@ -119,6 +83,7 @@ class EngineBase:
                 if k.startswith(unwanted_prefix):
                     pretrained_dict[k[len(unwanted_prefix) :]] = pretrained_dict.pop(k)
             self.model.load_state_dict(pretrained_dict)
+
         # compile model
         if config.compile_mode is not None:
             self.model = torch.compile(
@@ -126,19 +91,62 @@ class EngineBase:
             )  # use compile_mode = "default" for layer analysis
         self.model.to(self.device)
 
-        # if self.train_or_eval_mode == "train":
-        # self.model.train()  # training mode
+        # print out training params:
+        self.get_train_params()
+
+    def get_train_params(self):
         print(
-            f"{self.model_name} was successfully loaded to {self.device}\n"
-            + f"Binocular interaction: {config.binocular_interaction}\n"
-            + f"Seed: {config.seed}\n"
-            + f"Compile mode: {config.compile_mode}\n"
+            "==============================================================\n"
+            "Training parameters: \n"
+            + f"{self.model_name} was successfully loaded to {self.device}\n"
+            + f"Binocular interaction: {self.config.binocular_interaction}\n"
+            + f"Seed: {self.config.seed}\n"
+            + f"Compile mode: {self.config.compile_mode}\n"
             + f"Experiment dir: {self.experiment_dir}\n"
-            + f"Dataset: {config.dataset}\n"
-            + f"Batch size train: {config.batch_size}\n"
-            + f"Batch size validation: {config.batch_size_val}\n"
-            + f"Number of epochs: {config.epochs} epochs"
+            + f"Dataset: {self.config.dataset}\n"
+            + f"Batch size train: {self.config.batch_size}\n"
+            + f"Batch size validation: {self.config.batch_size_val}\n"
+            + f"Number of epochs: {self.config.epochs} epochs \n"
+            + "==============================================================\n"
         )
+
+    def make_dirs(self):
+        """
+        make folders for analysis
+        """
+
+        # parent_folder = "/media/wundari/S990Pro2_4TB"
+        parent_folder = os.path.abspath(f"{os.curdir}/..")
+        if self.config.dataset == "sceneflow_flying":
+            self.datadir = f"{parent_folder}/Dataset/SceneFlow_complete/FlyingThings3D/"
+        elif self.config.dataset == "sceneflow_monkaa":
+            self.datadir = f"{parent_folder}/Dataset/SceneFlow_complete/Monkaa/"
+        else:
+            raise ValueError(f"Unsupported dataset: {self.config.dataset}")
+        if self.config.dataset_directory:
+            self.datadir = os.path.abspath(self.config.dataset_directory)
+
+        # saving directory
+        self.save_dir = os.path.join(
+            f"{self.model_name}/run",
+            self.config.dataset,
+            f"bino_interaction_{self.config.binocular_interaction}",
+        )
+        if not os.path.exists(self.save_dir):
+            os.makedirs(self.save_dir)
+
+        # experiment directory
+        runs = natsorted(glob.glob(os.path.join(self.save_dir, "experiment_*")))
+        if self.config.load_state:
+            run_id = self.config.experiment_id
+        else:
+            run_id = int(runs[-1].split("_")[-1]) + 1 if runs else 0
+        self.experiment_dir = os.path.join(
+            self.save_dir,
+            f"experiment_{run_id}",
+        )
+        if not os.path.exists(self.experiment_dir):
+            os.makedirs(self.experiment_dir)
 
     def _build_model(self, config: ConfigBNN | ConfigGCNet) -> nn.Module:
         raise NotImplementedError

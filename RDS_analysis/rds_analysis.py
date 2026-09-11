@@ -78,26 +78,16 @@ class RDSAnalysis(EngineBase):
         self.disp_ct_pix_list = [
             self.target_disp,
             -self.target_disp,
-        ]  # disparity magnitude (near, far).
+        ]  # disparity magnitude (near, far)
+
+        # make dirs for saving the rds analysis
+        self.make_rds_dirs()
+
+        # print out RDS params for analysis:
+        self.get_rds_analysis_params()
 
         # transform rds to tensor and in range [0, 1]
         self.transform_data = NormalizeRDS()
-
-        # dirs for rds analysis
-        self.rds_dir = os.path.join(
-            self.experiment_dir,
-            f"rds_analysis_{config.resume[:-8]}",
-            f"target_disp_{self.target_disp}px",
-        )
-        if not os.path.exists(self.rds_dir):
-            os.makedirs(self.rds_dir)
-
-        if self.pedestal_flag:
-            self.xDecode_dir = f"{self.rds_dir}/xDecode_analysis_with_pedestal"
-        else:
-            self.xDecode_dir = f"{self.rds_dir}/xDecode_analysis_wo_pedestal"
-        if not os.path.exists(self.xDecode_dir):
-            os.mkdir(self.xDecode_dir)
 
         if self.model_name == "GC_Net":
             self.target_list = [
@@ -121,6 +111,43 @@ class RDSAnalysis(EngineBase):
                 self.model.decoder.layer36a[0],
                 self.model.decoder.layer37,
             ]
+
+    def get_rds_analysis_params(self):
+        print(
+            "==================================================================\n"
+            + "Parameters used for RDS analysis: \n"
+            + f"Batch size RDS: {self.batch_size_rds} \n"
+            + f"Disparity targets: [-{self.target_disp}, {self.target_disp}] pixels \n"
+            + f"Number of RDS for each disparity target: {self.n_rds_each_disp} \n"
+            + f"Number of bootstrap for cross-decoding analysis: {self.n_bootstrap} \n"
+            + "==================================================================\n"
+        )
+
+    def make_rds_dirs(self):
+        """
+        dirs for rds analysis
+        """
+
+        self.rds_dir = os.path.join(
+            self.experiment_dir,
+            f"rds_analysis_{self.config.resume[:-8]}",
+            f"target_disp_{self.target_disp}px",
+        )
+        if not os.path.exists(self.rds_dir):
+            os.makedirs(self.rds_dir)
+
+        if self.pedestal_flag:
+            self.xDecode_dir = f"{self.rds_dir}/xDecode_analysis_with_pedestal"
+        else:
+            self.xDecode_dir = f"{self.rds_dir}/xDecode_analysis_wo_pedestal"
+        if not os.path.exists(self.xDecode_dir):
+            os.mkdir(self.xDecode_dir)
+
+    def _build_model(self, config: ConfigBNN | ConfigGCNet):
+        if config.model_name == "BNN":
+            return build_bnn(config)
+        elif config.model_name == "GC_Net":
+            return build_gcnet(config)
 
     @torch.no_grad()
     def compute_layer_activations(
@@ -166,12 +193,6 @@ class RDSAnalysis(EngineBase):
             hook.remove_hooks()
             for module, mode in modes.items():
                 module.training = mode
-
-    def _build_model(self, config: ConfigBNN | ConfigGCNet):
-        if config.model_name == "BNN":
-            return build_bnn(config)
-        elif config.model_name == "GC_Net":
-            return build_gcnet(config)
 
     @torch.no_grad()
     def compute_disp_map_rds(self, dotMatch, dotDens, background_flag, pedestal_flag):

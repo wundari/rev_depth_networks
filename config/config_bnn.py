@@ -13,12 +13,12 @@ class ConfigBNN(Config):
     seed: int = 1618
 
     # resume from checkpoint
-    load_state: bool = False
+    load_state: bool = True
     if load_state:
         compile_mode = None
-    experiment_id: int = 0  # experiment id for loading pretrained DNN
+    experiment_id: int = 2  # experiment id for loading pretrained DNN
     epoch_to_load = 9
-    iter_to_load = 17589
+    iter_to_load = 17000
     resume: str = (
         f"epoch_{epoch_to_load}_iter_{iter_to_load}_model_best.pth.tar"  # pretrained file name, e.g: epoch_1_model.pth.tar
     )
