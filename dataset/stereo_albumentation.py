@@ -7,6 +7,9 @@ import random
 import cv2
 import numpy as np
 import torch
+import os
+
+os.environ["NO_ALBUMENTATIONS_UPDATE"] = "1"
 from albumentations.core.transforms_interface import BasicTransform
 
 """

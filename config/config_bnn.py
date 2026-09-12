@@ -9,14 +9,14 @@ from dataclasses_json import dataclass_json
 class ConfigBNN(Config):
 
     model_name: str = "BNN"
-    binocular_interaction: str = "cmm"
-    seed: int = 1618
+    binocular_interaction: str = "default"
+    seed: int = 35154
 
     # resume from checkpoint
     load_state: bool = False
     if load_state:
         compile_mode = None
-    experiment_id: int = 12  # experiment id for loading pretrained DNN
+    experiment_id: int = seed  # experiment id for loading pretrained DNN
     epoch_to_load = 9
     iter_to_load = 17000
     resume: str = (

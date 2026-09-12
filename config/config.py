@@ -50,9 +50,8 @@ class Config:
     log_interval: int = 100  # interval for tqdm logging
     eval_interval: int = 500  # interval for calculating validation error
     n_iter_eval: int = 400  # the number of iterations for validation
-    save_snapshot: bool = True  # whether to save predicted disparity map
-    snapshot_interval: int = (
-        2500  # interval for visualizing the predicted disparity map
+    save_snapshot: bool = (
+        True  # whether to save predicted disparity map at the end of each epoch
     )
     clip_max_norm: float = 1.0  # gradient clipping max norm
     device: str = (

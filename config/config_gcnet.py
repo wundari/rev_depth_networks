@@ -8,16 +8,16 @@ from dataclasses_json import dataclass_json
 class ConfigGCNet(Config):
 
     model_name: str = "GC_Net"
-    binocular_interaction: str = "bem"
-    seed: int = 1618
+    binocular_interaction: str = "default"
+    seed: int = 16476
 
     # resume from checkpoint
-    load_state: bool = True
+    load_state: bool = False
     if load_state:
         compile_mode = None
-    experiment_id: int = 0  # experiment id for loading pretrained DNN
-    epoch_to_load = 7
-    iter_to_load = 13000
+    experiment_id: int = seed  # experiment id for loading pretrained DNN
+    epoch_to_load = 9
+    iter_to_load = 16500
     resume: str = (
         f"epoch_{epoch_to_load}_iter_{iter_to_load}_model_best.pth.tar"  # pretrained file name, e.g: epoch_1_model.pth.tar
     )
@@ -25,9 +25,9 @@ class ConfigGCNet(Config):
     # bino_interaction: default, batch size 4
     epoch_iter_to_load_default: list[tuple[int, int]] = field(
         default_factory=lambda: [
-            (8, 18100),  # seed 1618
-            (9, 20400),  # seed 11364
-            (8, 18100),  # seed 16476
+            (9, 16500),  # seed 1618
+            (9, 16000),  # seed 11364
+            (9, 16500),  # seed 16476
             (7, 16500),  # seed 27829
             (7, 17300),  # seed 35154
             (8, 19300),  # seed 35744

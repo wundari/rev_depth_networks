@@ -442,7 +442,7 @@ class EngineBase:
             np.save(Path(self.experiment_dir) / f"{name}.npy", values)
 
     @torch.no_grad()
-    def _save_prediction_snapshot(self, loader):
+    def _save_prediction_snapshot(self, loader, epoch: int):
         """
         Periodically save a qualitative left/right/pred/gt figure.
         """
@@ -495,7 +495,7 @@ class EngineBase:
                 fig.colorbar(im, cax=cax)
 
             fig.savefig(
-                f"{self.pred_images_dir}/output_test.pdf",
+                f"{self.pred_images_dir}/output_test_epoch_{epoch}.pdf",
                 dpi=200,
                 bbox_inches="tight",
             )
@@ -697,27 +697,26 @@ class EngineBase:
                     # safe performance history
                     self._save_history()
 
-                    # save best model
-                    if (val_loss < self.best_loss) and (epoch - 1 > 5):
+                    # save best model, after 5 epochs to avoid saving too early
+                    if (val_loss < self.best_loss) and (epoch + 1 > 5):
                         self.best_loss = val_loss
                         self.save_checkpoint(epoch, step, optimizer, best=True)
 
-                    # save predicted disparity maps from test dataloader
-                    if (
-                        self.config.save_snapshot
-                        and step % self.config.snapshot_interval == 0
-                    ):
-                        self._save_prediction_snapshot(test_loader)
+            # save predicted disparity maps from test dataloader at the end of each epoch
+            if self.config.save_snapshot:
+                self._save_prediction_snapshot(test_loader, epoch)
 
             # save model each epoch
-            if epoch - 1 > 5:
-                self.save_checkpoint(epoch, step, optimizer)
+            # if epoch + 1 > 5:
+            #     self.save_checkpoint(epoch, step, optimizer)
 
         t_end = timer()
         now = datetime.now()
         time_end = now.strftime("%H:%M:%S")
         dur = (t_end - t_start) / 60.0
-        print(f"Training has completed: [{time_start} -> {time_end}] [{dur:.2f} mins]")
+        print(
+            f"Training has completed: [{time_start} -> {time_end}] [{dur:.2f} mins] \n"
+        )
 
         return self.history
 
