@@ -5,26 +5,30 @@ working directory: BNN
 """
 
 # %% load necessary modules
-import torch
-import torchvision.transforms as transforms
-from torch.utils.data import DataLoader
+# import torch
+# import torchvision.transforms as transforms
+# from torch.utils.data import DataLoader
 
-from config.config import ConfigBNN
+from config.config_bnn import ConfigBNN
+from config.config_gcnet import ConfigGCNet
 
 # from engine.engine_base import Engine
-from modules.bnn import build_bnn
+# from BNN.modules.bnn import build_bnn
 
 # from RDS_analysis.rds_analysis import RDSAnalysis
-from RDS.DataHandler_RDS import RDS_Handler, DatasetRDS
-from SVM.svm_analysis_v3 import load_train_data, load_test_data, xDecode_bootstrap
-from utilities.misc import NestedTensor
+from RDS_analysis.rds_analysis import RDSAnalysis
+
+# from RDS.DataHandler_RDS import RDS_Handler, DatasetRDS
+# from SVM.svm_analysis import load_train_data, load_test_data, xDecode_bootstrap
+# from utilities.misc import NestedTensor
 
 import gc
 import os
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-from tqdm import tqdm
+
+# from tqdm import tqdm
 from scipy.stats import sem
 
 # reproducibility
@@ -32,11 +36,10 @@ import random
 
 
 # %%
-class GA_RDS:
+class GA_RDS(RDSAnalysis):
 
-    def __init__(self, config: ConfigBNN, params_rds: dict) -> None:
+    def __init__(self, config: ConfigBNN | ConfigGCNet) -> None:
 
-        self.config = config
         self.dataset = config.dataset
         self.binocular_interaction = config.binocular_interaction
         self.seed = config.seed
@@ -44,88 +47,31 @@ class GA_RDS:
         self.iter = config.iter_to_load
         self.device = config.device
 
-        # rds parameters
-        self.params_rds = params_rds
-        self.h_bg = 256  # rds height
-        self.w_bg = 512  # rds width
-        self.rds_type = params_rds["rds_type"]
-        self.batch_size = params_rds["batch_size_rds"]
-        self.n_rds_each_disp = params_rds["n_rds_each_disp"]
-        self.dotDens_list = params_rds["dotDens_list"]
-        self.dotMatch_list = params_rds["dotMatch_list"]
-        self.background_flag = params_rds["background_flag"]
-        self.target_disp = params_rds["target_disp"]
-        self.pedestal_flag = params_rds["pedestal_flag"]
-        self.disp_ct_pix_list = [
-            self.target_disp,
-            -self.target_disp,
-        ]  # disparity magnitude (near, far).
-
-        # transform rds to tensor and in range [0, 1]
-        # self.transform_data = transforms.Compose(
-        #     [transforms.ToTensor(), transforms.Lambda(lambda t: (t + 1.0) / 2.0)]
-        # )
-        # mean = (0.485 * 255.0, 0.456 * 255.0, 0.406 * 255.0)
-        # std = (0.229 * 255.0, 0.224 * 255.0, 0.225 * 255.0)
-        mean = (0.485, 0.456, 0.406)
-        std = (0.229, 0.224, 0.225)
-        # mean = np.array([0.5, 0.5, 0.5])
-        # std = np.array([0.5, 0.5, 0.5])
-        self.transform_data = transforms.Compose(
-            [
-                transforms.ToTensor(),
-                transforms.Lambda(lambda t: (t + 1.0) / 2.0),
-                transforms.Normalize(mean, std),
-            ]
-        )
-
-        # set the experiment directory
-        self.experiment_dir = (
-            f"run/{self.dataset}/"
-            + f"bino_interaction_{self.binocular_interaction}/"
-            + f"{self.seed}"
-        )
-
         # directory for storing plots of a given interaction
         # (average across seeds)
         self.plot_dir = f"{self.experiment_dir}/../plots"
         if not os.path.exists(self.plot_dir):
             os.makedirs(self.plot_dir)
 
-        self.rds_dir = (
-            f"{self.experiment_dir}/"
-            + f"rds_analysis_epoch_{self.epoch}_"
-            + f"iter_{self.iter}/"
-            + f"target_disp_{self.target_disp}px"
-        )
-        if not os.path.exists(self.rds_dir):
-            os.makedirs(self.rds_dir)
-
-        if self.pedestal_flag:
-            self.xDecode_dir = f"{self.rds_dir}/xDecode_analysis_with_pedestal"
-        else:
-            self.xDecode_dir = f"{self.rds_dir}/xDecode_analysis_wo_pedestal"
-        if not os.path.exists(self.xDecode_dir):
-            os.mkdir(self.xDecode_dir)
-
         # print out network configuration
         self.__getconfig__()
+        self.__getconfig_rds___()
 
-    def __getconfig__(self) -> None:
-        """
-        print out the network configuration
-        """
+    # def __getconfig__(self) -> None:
+    #     """
+    #     print out the network configuration
+    #     """
 
-        print(
-            "Network config\n"
-            + f"binocular interaction: {self.config.binocular_interaction}\n"
-            + f"seed: {self.config.seed}\n"
-            + f"epoch: {self.config.epoch_to_load}\n"
-            + f"iter: {self.config.iter_to_load}\n"
-            + f"experiment_dir: {self.experiment_dir}\n"
-            + f"rds_dir: {self.rds_dir}\n"
-            + f"xDecode_dir: {self.xDecode_dir}\n"
-        )
+    #     print(
+    #         "Network config\n"
+    #         + f"binocular interaction: {self.config.binocular_interaction}\n"
+    #         + f"seed: {self.config.seed}\n"
+    #         + f"epoch: {self.config.epoch_to_load}\n"
+    #         + f"iter: {self.config.iter_to_load}\n"
+    #         + f"experiment_dir: {self.experiment_dir}\n"
+    #         + f"rds_dir: {self.rds_dir}\n"
+    #         + f"xDecode_dir: {self.xDecode_dir}\n"
+    #     )
 
     def update_network_config(
         self, interaction: str, seed: int, epoch: int, iter: int
@@ -141,7 +87,7 @@ class GA_RDS:
         epoch_old = self.epoch
         iter_old = self.iter
 
-        # update binocular_interaction, seed, epoch, iter in
+        # update binocular_interaction, seed, epoch, iter, and model_pretrained in
         # the class and config
         self.binocular_interaction = interaction
         self.config.binocular_interaction = interaction
@@ -151,12 +97,14 @@ class GA_RDS:
         self.config.epoch_to_load = epoch
         self.iter = iter
         self.config.iter_to_load = iter
+        self.model_pretrained = f"epoch_{self.epoch}_iter_{self.iter}_model_best.pth.tar"  # pretrained file name, e.g: epoch_1_model.pth.tar
+        self.config.model_pretrained = self.model_pretrained
 
         # update the experiment directories based on the new interaction
         self.experiment_dir = (
-            f"run/{self.dataset}/"
+            f"{self.model_name}/run/{self.dataset}/"
             + f"bino_interaction_{self.binocular_interaction}/"
-            + f"{self.seed}"
+            + f"experiment_{self.seed}"
         )
 
         # update directory for storing plots of a given interaction
@@ -166,325 +114,321 @@ class GA_RDS:
             os.makedirs(self.plot_dir)
 
         # update folders for rds analysis
-        self.rds_dir = (
-            f"{self.experiment_dir}/"
-            + f"rds_analysis_epoch_{self.epoch}"
-            + f"_iter_{self.iter}/"
-            + f"target_disp_{self.target_disp}px"
-        )
-        if not os.path.exists(self.rds_dir):
-            os.makedirs(self.rds_dir)
-
-        # udpate xDecode_dir
-        if self.pedestal_flag:
-            self.xDecode_dir = f"{self.rds_dir}/xDecode_analysis_with_pedestal"
-        else:
-            self.xDecode_dir = f"{self.rds_dir}/xDecode_analysis_wo_pedestal"
-        if not os.path.exists(self.xDecode_dir):
-            os.mkdir(self.xDecode_dir)
-
-        print(
-            "Updating network config\n"
-            + f"binocular interaction: {interaction_old} => {self.config.binocular_interaction}\n"
-            + f"seed: {seed_old} => {self.config.seed}\n"
-            + f"epoch: {epoch_old} => {self.config.epoch_to_load}\n"
-            + f"iter: {iter_old} => {self.config.iter_to_load}\n"
-            + f"experiment_dir: {self.experiment_dir}\n"
-            + f"rds_dir: {self.rds_dir}\n"
-            + f"xDecode_dir: {self.xDecode_dir}\n"
-        )
-
-    def load_model(self) -> None:
-        """
-        Load the model state from a checkpoint (pre-trained model).
-        """
-
-        # build model
-        self.model = build_bnn(self.config)
-
-        # load model state from checkpoint
-        resume = f"epoch_{self.epoch}_iter_{self.iter}_model_best.pth.tar"
-        resume_path = os.path.join(self.experiment_dir, resume)
-        checkpoint = torch.load(f"{resume_path}", map_location=self.device)
-        pretrained_dict = checkpoint["state_dict"]
-
-        # fix the keys of the state dictionary
-        unwanted_prefix = "_orig_mod."
-        for k, v in list(pretrained_dict.items()):
-            if k.startswith(unwanted_prefix):
-                pretrained_dict[k[len(unwanted_prefix) :]] = pretrained_dict.pop(k)
-        self.model.load_state_dict(pretrained_dict)
-
-        # compile model
-        if self.config.compile_mode is not None:
-            self.model = torch.compile(
-                self.model, mode=self.config.compile_mode
-            )  # use compile_mode = "default" for layer analysis
-        self.model.to(self.device)
-
-        # reset target layer names, important for hooking
-        self.target_layer = [
-            self.model.encoder.in_conv[0],
-            self.model.encoder.layer2[0],
-            self.model.decoder.layer3[0],
-            self.model.decoder.layer4,
-        ]
-
-        print(
-            f"BNN was successfully loaded to {self.device}. \n"
-            + f"BNN model: {resume_path}\n"
-            + f"binocular interaction: {self.binocular_interaction}\n"
-            + f"compile mode: {self.config.compile_mode}\n"
-            + f"experiment dir: {self.experiment_dir}\n"
-        )
-
-    @torch.no_grad()
-    def compute_disp_map_rds(self, dotMatch, dotDens, background_flag, pedestal_flag):
-        """
-        generate disparity map specifically for rds for a given dot Match and dotDens.
-
-        Args:
-            dotMatch (float): dot match level; between 0 (ards) to 1(crds)
-
-            dotDens (float): dot density level; between 0.1 to 0.9
-
-            background_flag ([binary 1/0]): a binary flag indicating
-                    whether the RDS is surrounded by cRDS background (1) or not (0)
-
-            pedestal_flag (binary): a flag indicating with or without pedestal.
-                pedestal here means that the whole RDSs are shifted such that
-                the smallest disparity = 0.
-                0: without pedestal
-                1: with pedestal
-
-        Returns:
-            pred_disp [len(disp_ct_pix_list) * n_rds_each_disp, h_bg, w_bg)] float32:
-                    predicted disparity map
-
-            pred_disp_labels [len(disp_ct_pix_list) * n_rds_each_disp] int8:
-                the label (near (+) or far(-)) of the predicted disparity map.
-        """
-
-        # set up seed
-        seed_number = self.seed
-        torch.manual_seed(seed_number)
-        torch.cuda.manual_seed(seed_number)
-        random.seed(seed_number)
-        np.random.seed(seed_number)
-        os.environ["PYTHONHASHSEED"] = str(seed_number)
-
-        # initialize random seed number for dataloader
-        def seed_worker(worker_id):
-            worker_seed = seed_number  # torch.initial_seed()  % 2**32
-            np.random.seed(worker_seed)
-            random.seed(worker_seed)
-
-            # print out seed number for each worker
-            # np_seed = np.random.get_state()[1][0]
-            # py_seed = random.getstate()[1][0]
-
-            # print(f"{worker_id} seed pytorch: {worker_seed}\n")
-            # print(f"{worker_id} seed numpy: {np_seed}\n")
-            # print(f"{worker_id} seed python: {py_seed}\n")
-
-        g = torch.Generator()
-        g.manual_seed(seed_number)
-
-        print(f"disp map RDS dotMatch: {dotMatch:.2f}, dotDens: {dotDens:.2f}")
-
-        # create dataloader for RDS
-        # [len(disp_ct_pix) * batch_size, h, w, n_channels]
-        rds_left, rds_right, rds_label = RDS_Handler.generate_rds(
-            dotMatch,
-            dotDens,
-            self.disp_ct_pix_list,
-            self.n_rds_each_disp,
-            background_flag,
-            pedestal_flag,
-        )
-
-        rds_data = DatasetRDS(
-            rds_left, rds_right, rds_label, transform=self.transform_data
-        )
-        rds_loader = DataLoader(
-            rds_data,
-            batch_size=self.batch_size,
-            shuffle=False,
-            pin_memory=True,
-            drop_last=True,
-            num_workers=2,
-            worker_init_fn=seed_worker,
-            generator=g,
-        )
-
-        pred_disp = torch.zeros(
-            (len(self.disp_ct_pix_list) * self.n_rds_each_disp, self.h_bg, self.w_bg),
-            dtype=torch.float32,
-        )
-        pred_disp_labels = np.zeros(
-            (len(self.disp_ct_pix_list) * self.n_rds_each_disp), dtype=np.int8
-        )
-
-        # predict disparity map
-        tepoch = tqdm(rds_loader)
-        for i, (inputs_left, inputs_right, disps) in enumerate(tepoch):
-            # (inputs_left, inputs_right, disps) = next(iter(rds_loader))
-
-            # generate disparity direction
-            ref = disps / 10.0
-
-            # build nested tensor
-            # input_data = NestedTensor(
-            #     left=inputs_left.pin_memory().to(self.config.device, non_blocking=True),
-            #     right=inputs_right.pin_memory().to(
-            #         self.config.device, non_blocking=True
-            #     ),
-            #     ref=ref.pin_memory().to(self.config.device, non_blocking=True),
-            # )
-            if ref.mean() > 0:
-                input_data = NestedTensor(
-                    left=inputs_left.pin_memory().to(
-                        self.config.device, non_blocking=True
-                    ),
-                    right=inputs_right.pin_memory().to(
-                        self.config.device, non_blocking=True
-                    ),
-                    ref=ref.pin_memory().to(self.config.device, non_blocking=True),
-                )
-            else:
-                input_data = NestedTensor(
-                    left=inputs_right.pin_memory().to(
-                        self.config.device, non_blocking=True
-                    ),
-                    right=inputs_left.pin_memory().to(
-                        self.config.device, non_blocking=True
-                    ),
-                    ref=ref.pin_memory().to(self.config.device, non_blocking=True),
-                )
-
-            # model output
-            with torch.autocast(device_type=self.config.device, dtype=torch.bfloat16):
-                disp_pred = self.model(input_data)
-
-            id_start = i * self.batch_size
-            id_end = id_start + self.batch_size
-            pred_disp_labels[id_start:id_end] = disps
-            pred_disp[id_start:id_end] = disp_pred
-
-            tepoch.set_description(
-                f"RDS dotMatch: {dotMatch:.2f}, "
-                + f"dotDens: {dotDens:.2f}, "
-                + f"iter: {i+1}/{len(rds_loader)}"
-            )
-
-        return pred_disp, pred_disp_labels
-
-    @torch.no_grad()
-    def compute_disp_map_rds_group(self, dotDens_list, background_flag, pedestal_flag):
-        """
-        generate disparity map for rds for each dot density in dotDens_list
-
-        Args:
-            dotDens_list ([list]): a list containing dot densities
-            background_flag ([binary 1/0]): a binary flag indicating
-                    whether the RDS is surrounded by cRDS background (1) or not (0)
-        """
-
-        for dm, dotMatch in enumerate(self.dotMatch_list):
-            pred_disp = torch.zeros(
-                (
-                    len(dotDens_list),
-                    len(self.disp_ct_pix_list) * self.n_rds_each_disp,
-                    self.h_bg,
-                    self.w_bg,
-                ),
-                dtype=torch.float32,
-            )
-            pred_disp_labels = np.zeros(
-                (len(dotDens_list), len(self.disp_ct_pix_list) * self.n_rds_each_disp),
-                dtype=np.int8,
-            )
-            for dd, dotDens in enumerate(dotDens_list):
-
-                pred_disp[dd], pred_disp_labels[dd] = self.compute_disp_map_rds(
-                    dotMatch, dotDens, background_flag, pedestal_flag
-                )
-
-            np.save(
-                f"{self.xDecode_dir}/pred_disp_{self.rds_type[dm]}.npy",
-                pred_disp.numpy(),
-            )
-            np.save(
-                f"{self.xDecode_dir}/pred_disp_labels_{self.rds_type[dm]}.npy",
-                pred_disp_labels,
-            )
-
-    def xDecode(self, dotDens_list, n_bootstrap, background_flag):
-        """
-        Perform cross-decoding: cRDS vs aRDS and cRDS vs hmRDS.
-
-        Args:
-            dotDens_list ([list]): a list containing dot densities
-
-            n_bootstrap (int): the number of bootstrap iteration
-
-            background_flag ([binary 1/0]): a binary flag indicating
-                    whether the RDS is surrounded by cRDS background (1) or not (0)
-
-        """
-        # build training dataset (using crds)
-        X_train, Y_train, x_mean, x_std = load_train_data(
-            self.xDecode_dir, background_flag
-        )
-        # X_train, Y_train, x_mean, x_std = load_train_data(rdsa.svm_dir, background_flag)
-
-        # build test dataset
-        X_ards, Y_ards, X_hmrds, Y_hmrds = load_test_data(
-            self.xDecode_dir, x_mean, x_std, background_flag
-        )
-        # X_ards, Y_ards, X_hmrds, Y_hmrds = load_test_data(
-        #     rdsa.svm_dir, x_mean, x_std, background_flag
+        self.make_rds_dirs()
+        # self.rds_dir = (
+        #     f"{self.experiment_dir}/"
+        #     + f"rds_analysis_epoch_{self.epoch}"
+        #     + f"_iter_{self.iter}/"
+        #     + f"target_disp_{self.target_disp}px"
         # )
+        # if not os.path.exists(self.rds_dir):
+        #     os.makedirs(self.rds_dir)
 
-        # classifying rds with SVM
-        n_samples = int(0.8 * len(X_train))
-        # n_bootstrap = 50  # 1000
-        (
-            score_ards_bootstrap,
-            predict_ards_bootstrap,
-            score_hmrds_bootstrap,
-            predict_hmrds_bootstrap,
-            score_crds_bootstrap,
-            predict_crds_bootstrap,
-        ) = xDecode_bootstrap(
-            X_train,
-            Y_train,
-            X_ards,
-            Y_ards,
-            X_hmrds,
-            Y_hmrds,
-            n_samples,
-            n_bootstrap,
-            dotDens_list,
-        )
+        # # udpate xDecode_dir
+        # if self.pedestal_flag:
+        #     self.xDecode_dir = f"{self.rds_dir}/xDecode_analysis_with_pedestal"
+        # else:
+        #     self.xDecode_dir = f"{self.rds_dir}/xDecode_analysis_wo_pedestal"
+        # if not os.path.exists(self.xDecode_dir):
+        #     os.mkdir(self.xDecode_dir)
 
-        # save file
-        np.save(f"{self.xDecode_dir}/score_ards_bootstrap.npy", score_ards_bootstrap)
-        np.save(f"{self.xDecode_dir}/score_hmrds_bootstrap.npy", score_hmrds_bootstrap)
-        np.save(f"{self.xDecode_dir}/score_crds_bootstrap.npy", score_crds_bootstrap)
-        np.save(
-            f"{self.xDecode_dir}/predict_ards_bootstrap.npy", predict_ards_bootstrap
-        )
-        np.save(
-            f"{self.xDecode_dir}/predict_hmrds_bootstrap.npy", predict_hmrds_bootstrap
-        )
-        np.save(
-            f"{self.xDecode_dir}/predict_crds_bootstrap.npy", predict_crds_bootstrap
+        print(
+            "==============================================================\n"
+            + f"Updating {self.model_name} config:\n"
+            + "==============================================================\n"
+            + f"Binocular interaction: {interaction_old} => {self.config.binocular_interaction}\n"
+            + f"Seed: {seed_old} => {self.config.seed}\n"
+            + f"Epoch: {epoch_old} => {self.config.epoch_to_load}\n"
+            + f"Iter: {iter_old} => {self.config.iter_to_load}\n"
+            + f"Experiment directory: {self.experiment_dir}\n"
+            + f"RDS directory: {self.rds_dir}\n"
+            + f"Cross-decoding directory: {self.xDecode_dir}\n"
+            + "==============================================================\n"
         )
 
-        print("score ards: ", score_ards_bootstrap.mean(axis=0))
-        print("score hmrds: ", score_hmrds_bootstrap.mean(axis=0))
-        print("score crds: ", score_crds_bootstrap.mean(axis=0))
+    # def load_model(self) -> None:
+    #     """
+    #     Load the model state from a checkpoint (pre-trained model).
+    #     """
+
+    #     # build model
+    #     self.model = build_bnn(self.config)
+
+    #     # load model state from checkpoint
+    #     resume = f"epoch_{self.epoch}_iter_{self.iter}_model_best.pth.tar"
+    #     resume_path = os.path.join(self.experiment_dir, resume)
+    #     checkpoint = torch.load(f"{resume_path}", map_location=self.device)
+    #     pretrained_dict = checkpoint["state_dict"]
+
+    #     # fix the keys of the state dictionary
+    #     unwanted_prefix = "_orig_mod."
+    #     for k, v in list(pretrained_dict.items()):
+    #         if k.startswith(unwanted_prefix):
+    #             pretrained_dict[k[len(unwanted_prefix) :]] = pretrained_dict.pop(k)
+    #     self.model.load_state_dict(pretrained_dict)
+
+    #     # compile model
+    #     if self.config.compile_mode is not None:
+    #         self.model = torch.compile(
+    #             self.model, mode=self.config.compile_mode
+    #         )  # use compile_mode = "default" for layer analysis
+    #     self.model.to(self.device)
+
+    #     print(
+    #         f"BNN was successfully loaded to {self.device}. \n"
+    #         + f"BNN model: {resume_path}\n"
+    #         + f"Binocular interaction: {self.binocular_interaction}\n"
+    #         + f"Compile mode: {self.config.compile_mode}\n"
+    #         + f"Experiment dir: {self.experiment_dir}\n"
+    #     )
+
+    # @torch.no_grad()
+    # def compute_disp_map_rds(self, dotMatch, dotDens, background_flag, pedestal_flag):
+    #     """
+    #     generate disparity map specifically for rds for a given dot Match and dotDens.
+
+    #     Args:
+    #         dotMatch (float): dot match level; between 0 (ards) to 1(crds)
+
+    #         dotDens (float): dot density level; between 0.1 to 0.9
+
+    #         background_flag ([binary 1/0]): a binary flag indicating
+    #                 whether the RDS is surrounded by cRDS background (1) or not (0)
+
+    #         pedestal_flag (binary): a flag indicating with or without pedestal.
+    #             pedestal here means that the whole RDSs are shifted such that
+    #             the smallest disparity = 0.
+    #             0: without pedestal
+    #             1: with pedestal
+
+    #     Returns:
+    #         pred_disp [len(disp_ct_pix_list) * n_rds_each_disp, h_bg, w_bg)] float32:
+    #                 predicted disparity map
+
+    #         pred_disp_labels [len(disp_ct_pix_list) * n_rds_each_disp] int8:
+    #             the label (near (+) or far(-)) of the predicted disparity map.
+    #     """
+
+    #     # set up seed
+    #     seed_number = self.seed
+    #     torch.manual_seed(seed_number)
+    #     torch.cuda.manual_seed(seed_number)
+    #     random.seed(seed_number)
+    #     np.random.seed(seed_number)
+    #     os.environ["PYTHONHASHSEED"] = str(seed_number)
+
+    #     # initialize random seed number for dataloader
+    #     def seed_worker(worker_id):
+    #         worker_seed = seed_number  # torch.initial_seed()  % 2**32
+    #         np.random.seed(worker_seed)
+    #         random.seed(worker_seed)
+
+    #         # print out seed number for each worker
+    #         # np_seed = np.random.get_state()[1][0]
+    #         # py_seed = random.getstate()[1][0]
+
+    #         # print(f"{worker_id} seed pytorch: {worker_seed}\n")
+    #         # print(f"{worker_id} seed numpy: {np_seed}\n")
+    #         # print(f"{worker_id} seed python: {py_seed}\n")
+
+    #     g = torch.Generator()
+    #     g.manual_seed(seed_number)
+
+    #     print(f"disp map RDS dotMatch: {dotMatch:.2f}, dotDens: {dotDens:.2f}")
+
+    #     # create dataloader for RDS
+    #     # [len(disp_ct_pix) * batch_size, h, w, n_channels]
+    #     rds_left, rds_right, rds_label = RDS_Handler.generate_rds(
+    #         dotMatch,
+    #         dotDens,
+    #         self.disp_ct_pix_list,
+    #         self.n_rds_each_disp,
+    #         background_flag,
+    #         pedestal_flag,
+    #     )
+
+    #     rds_data = DatasetRDS(
+    #         rds_left, rds_right, rds_label, transform=self.transform_data
+    #     )
+    #     rds_loader = DataLoader(
+    #         rds_data,
+    #         batch_size=self.batch_size,
+    #         shuffle=False,
+    #         pin_memory=True,
+    #         drop_last=True,
+    #         num_workers=2,
+    #         worker_init_fn=seed_worker,
+    #         generator=g,
+    #     )
+
+    #     pred_disp = torch.zeros(
+    #         (len(self.disp_ct_pix_list) * self.n_rds_each_disp, self.h_bg, self.w_bg),
+    #         dtype=torch.float32,
+    #     )
+    #     pred_disp_labels = np.zeros(
+    #         (len(self.disp_ct_pix_list) * self.n_rds_each_disp), dtype=np.int8
+    #     )
+
+    #     # predict disparity map
+    #     tepoch = tqdm(rds_loader)
+    #     for i, (inputs_left, inputs_right, disps) in enumerate(tepoch):
+    #         # (inputs_left, inputs_right, disps) = next(iter(rds_loader))
+
+    #         # generate disparity direction
+    #         ref = disps / 10.0
+
+    #         # build nested tensor
+    #         # input_data = NestedTensor(
+    #         #     left=inputs_left.pin_memory().to(self.config.device, non_blocking=True),
+    #         #     right=inputs_right.pin_memory().to(
+    #         #         self.config.device, non_blocking=True
+    #         #     ),
+    #         #     ref=ref.pin_memory().to(self.config.device, non_blocking=True),
+    #         # )
+    #         if ref.mean() > 0:
+    #             input_data = NestedTensor(
+    #                 left=inputs_left.pin_memory().to(
+    #                     self.config.device, non_blocking=True
+    #                 ),
+    #                 right=inputs_right.pin_memory().to(
+    #                     self.config.device, non_blocking=True
+    #                 ),
+    #                 ref=ref.pin_memory().to(self.config.device, non_blocking=True),
+    #             )
+    #         else:
+    #             input_data = NestedTensor(
+    #                 left=inputs_right.pin_memory().to(
+    #                     self.config.device, non_blocking=True
+    #                 ),
+    #                 right=inputs_left.pin_memory().to(
+    #                     self.config.device, non_blocking=True
+    #                 ),
+    #                 ref=ref.pin_memory().to(self.config.device, non_blocking=True),
+    #             )
+
+    #         # model output
+    #         with torch.autocast(device_type=self.config.device, dtype=torch.bfloat16):
+    #             disp_pred = self.model(input_data)
+
+    #         id_start = i * self.batch_size
+    #         id_end = id_start + self.batch_size
+    #         pred_disp_labels[id_start:id_end] = disps
+    #         pred_disp[id_start:id_end] = disp_pred
+
+    #         tepoch.set_description(
+    #             f"RDS dotMatch: {dotMatch:.2f}, "
+    #             + f"dotDens: {dotDens:.2f}, "
+    #             + f"iter: {i+1}/{len(rds_loader)}"
+    #         )
+
+    #     return pred_disp, pred_disp_labels
+
+    # @torch.no_grad()
+    # def compute_disp_map_rds_group(self, dotDens_list, background_flag, pedestal_flag):
+    #     """
+    #     generate disparity map for rds for each dot density in dotDens_list
+
+    #     Args:
+    #         dotDens_list ([list]): a list containing dot densities
+    #         background_flag ([binary 1/0]): a binary flag indicating
+    #                 whether the RDS is surrounded by cRDS background (1) or not (0)
+    #     """
+
+    #     for dm, dotMatch in enumerate(self.dotMatch_list):
+    #         pred_disp = torch.zeros(
+    #             (
+    #                 len(dotDens_list),
+    #                 len(self.disp_ct_pix_list) * self.n_rds_each_disp,
+    #                 self.h_bg,
+    #                 self.w_bg,
+    #             ),
+    #             dtype=torch.float32,
+    #         )
+    #         pred_disp_labels = np.zeros(
+    #             (len(dotDens_list), len(self.disp_ct_pix_list) * self.n_rds_each_disp),
+    #             dtype=np.int8,
+    #         )
+    #         for dd, dotDens in enumerate(dotDens_list):
+
+    #             pred_disp[dd], pred_disp_labels[dd] = self.compute_disp_map_rds(
+    #                 dotMatch, dotDens, background_flag, pedestal_flag
+    #             )
+
+    #         np.save(
+    #             f"{self.xDecode_dir}/pred_disp_{self.rds_type[dm]}.npy",
+    #             pred_disp.numpy(),
+    #         )
+    #         np.save(
+    #             f"{self.xDecode_dir}/pred_disp_labels_{self.rds_type[dm]}.npy",
+    #             pred_disp_labels,
+    #         )
+
+    # def xDecode(self, dotDens_list, n_bootstrap, background_flag):
+    #     """
+    #     Perform cross-decoding: cRDS vs aRDS and cRDS vs hmRDS.
+
+    #     Args:
+    #         dotDens_list ([list]): a list containing dot densities
+
+    #         n_bootstrap (int): the number of bootstrap iteration
+
+    #         background_flag ([binary 1/0]): a binary flag indicating
+    #                 whether the RDS is surrounded by cRDS background (1) or not (0)
+
+    #     """
+    #     # build training dataset (using crds)
+    #     X_train, Y_train, x_mean, x_std = load_train_data(
+    #         self.xDecode_dir, background_flag
+    #     )
+    #     # X_train, Y_train, x_mean, x_std = load_train_data(rdsa.svm_dir, background_flag)
+
+    #     # build test dataset
+    #     X_ards, Y_ards, X_hmrds, Y_hmrds = load_test_data(
+    #         self.xDecode_dir, x_mean, x_std, background_flag
+    #     )
+    #     # X_ards, Y_ards, X_hmrds, Y_hmrds = load_test_data(
+    #     #     rdsa.svm_dir, x_mean, x_std, background_flag
+    #     # )
+
+    #     # classifying rds with SVM
+    #     n_samples = int(0.8 * len(X_train))
+    #     # n_bootstrap = 50  # 1000
+    #     (
+    #         score_ards_bootstrap,
+    #         predict_ards_bootstrap,
+    #         score_hmrds_bootstrap,
+    #         predict_hmrds_bootstrap,
+    #         score_crds_bootstrap,
+    #         predict_crds_bootstrap,
+    #     ) = xDecode_bootstrap(
+    #         X_train,
+    #         Y_train,
+    #         X_ards,
+    #         Y_ards,
+    #         X_hmrds,
+    #         Y_hmrds,
+    #         n_samples,
+    #         n_bootstrap,
+    #         dotDens_list,
+    #     )
+
+    #     # save file
+    #     np.save(f"{self.xDecode_dir}/score_ards_bootstrap.npy", score_ards_bootstrap)
+    #     np.save(f"{self.xDecode_dir}/score_hmrds_bootstrap.npy", score_hmrds_bootstrap)
+    #     np.save(f"{self.xDecode_dir}/score_crds_bootstrap.npy", score_crds_bootstrap)
+    #     np.save(
+    #         f"{self.xDecode_dir}/predict_ards_bootstrap.npy", predict_ards_bootstrap
+    #     )
+    #     np.save(
+    #         f"{self.xDecode_dir}/predict_hmrds_bootstrap.npy", predict_hmrds_bootstrap
+    #     )
+    #     np.save(
+    #         f"{self.xDecode_dir}/predict_crds_bootstrap.npy", predict_crds_bootstrap
+    #     )
+
+    #     print("score ards: ", score_ards_bootstrap.mean(axis=0))
+    #     print("score hmrds: ", score_hmrds_bootstrap.mean(axis=0))
+    #     print("score crds: ", score_crds_bootstrap.mean(axis=0))
 
     def compute_disp_map_all_seeds(
         self, interaction: str, n_bootstrap: int = 1000
@@ -502,14 +446,29 @@ class GA_RDS:
                 epoch, iter = self.config.epoch_iter_to_load_bem[s]
             elif interaction == "cmm":
                 epoch, iter = self.config.epoch_iter_to_load_cmm[s]
-            else:  # sum_diff
+            elif interaction == "sum_diff":
                 epoch, iter = self.config.epoch_iter_to_load_sum_diff[s]
+            else:
+                raise ValueError(
+                    f"Invalid binocular interaction: {interaction}!\n"
+                    + "Only one of these interactions are allowed: [default, bem, cmm, sum_diff]"
+                )
 
             # update network configuration and directory addresses
             self.update_network_config(interaction, seed, epoch, iter)
 
             # update model
-            self.load_model()
+            self._load_pretrained_model(self.model_pretrained)
+            self.model.to(self.device)
+
+            # print(
+            #     f"BNN was successfully loaded to {self.device}. \n"
+            #     + f"BNN model: {resume_path}\n"
+            #     + f"Binocular interaction: {self.binocular_interaction}\n"
+            #     + f"Compile mode: {self.config.compile_mode}\n"
+            #     + f"Experiment dir: {self.experiment_dir}\n"
+            # )
+            # self.load_model()
 
             # compute model responses to RDSs
             self.compute_disp_map_rds_group(

@@ -2,7 +2,7 @@
 from config.config_bnn import ConfigBNN
 from BNN.GroupAnalysis.group_analysis_rds import GA_RDS
 
-import numpy as np
+# import numpy as np
 
 # %%
 config = ConfigBNN()

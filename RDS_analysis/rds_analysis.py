@@ -43,7 +43,7 @@ class NormalizeRDS:
             2, 0, 1
         )
         if not torch.isfinite(x).all() or x.min() < -1 or x.max() > 1:
-            raise ValueError("RDS pixels must be finite in [-1,1]")
+            raise ValueError("RDS pixels must be finite in [-1, 1]")
 
         return ((x + 1) / 2 - self._mean) / self._std
 
@@ -53,6 +53,9 @@ class RDSAnalysis(EngineBase):
     def __init__(self, config: ConfigBNN | ConfigGCNet) -> None:
 
         super().__init__(config)
+
+        self.model_name = config.model_name
+        self.config = config
 
         # rds parameters
         self.h_bg = config.img_height  # rds height
@@ -84,12 +87,20 @@ class RDSAnalysis(EngineBase):
         self.make_rds_dirs()
 
         # print out RDS params for analysis:
-        self.get_rds_analysis_params()
+        self.__getconfig_rds___()
 
         # transform rds to tensor and in range [0, 1]
         self.transform_data = NormalizeRDS()
 
-        if self.model_name == "GC_Net":
+        # reset target layer names, important for hooking
+        if self.model_name == "BNN":
+            self.target_list = [
+                self.model.encoder.in_conv[0],
+                self.model.encoder.layer2[0],
+                self.model.decoder.layer3[0],
+                self.model.decoder.layer4,
+            ]
+        elif self.model_name == "GC_Net":
             self.target_list = [
                 self.model.decoder.layer19[0],
                 self.model.decoder.layer20[0],
@@ -112,26 +123,29 @@ class RDSAnalysis(EngineBase):
                 self.model.decoder.layer37,
             ]
 
-    def get_rds_analysis_params(self):
+    def __getconfig_rds___(self):
         print(
             "==============================================================\n"
             + "RDS analysis parameters: \n"
             + "==============================================================\n"
+            + f"DNN model used for RDS analysis: {self.config.model_pretrained}\n"
             + f"Batch size RDS: {self.batch_size_rds} \n"
             + f"Disparity targets: [-{self.target_disp}, {self.target_disp}] pixels \n"
             + f"Number of RDS for each disparity target: {self.n_rds_each_disp} \n"
             + f"Number of bootstrap for cross-decoding analysis: {self.n_bootstrap} \n"
+            + f"RDS directory: {self.rds_dir}\n"
+            + f"Cross-decoding directory: {self.xDecode_dir}\n"
             + "==============================================================\n"
         )
 
-    def make_rds_dirs(self):
+    def make_rds_dirs(self) -> None:
         """
         dirs for rds analysis
         """
 
         self.rds_dir = os.path.join(
             self.experiment_dir,
-            f"rds_analysis_{self.config.resume[:-8]}",
+            f"rds_analysis_{self.config.model_pretrained[:-8]}",
             f"target_disp_{self.target_disp}px",
         )
         if not os.path.exists(self.rds_dir):
@@ -144,7 +158,7 @@ class RDSAnalysis(EngineBase):
         if not os.path.exists(self.xDecode_dir):
             os.mkdir(self.xDecode_dir)
 
-    def _build_model(self, config: ConfigBNN | ConfigGCNet):
+    def _build_model(self, config: ConfigBNN | ConfigGCNet) -> None:
         if config.model_name == "BNN":
             return build_bnn(config)
         elif config.model_name == "GC_Net":

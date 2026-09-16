@@ -35,23 +35,23 @@ class EngineBase:
 
     def __init__(self, config: ConfigBNN | ConfigGCNet) -> None:
 
-        self.config = config
-        self.model_name = config.model_name
-        self.device = config.device
-
         random.seed(config.seed)
         np.random.seed(config.seed)
         torch.manual_seed(config.seed)
         torch.backends.cudnn.deterministic = config.deterministic
         torch.backends.cudnn.benchmark = not config.deterministic
 
+        self.config = config
+        self.model_name = config.model_name
+        self.device = config.device
+        self.h = config.img_height
+        self.w = config.img_width
+
         if config.amp_dtype not in {"float32", "float16", "bfloat16"}:
             raise ValueError("Unknown amp_dtype")
         if torch.device(self.device).type == "cuda" and config.amp_dtype == "bfloat16":
             if not torch.cuda.is_bf16_supported():
                 raise ValueError("This GPU does not support BF16; choose float16")
-        self.h = config.img_height
-        self.w = config.img_width
 
         # dataset directory
         self.make_dirs()
@@ -64,33 +64,36 @@ class EngineBase:
 
         # load pre-trained BNN, if provided
         if config.load_state:
-            print(
-                "==============================================================\n"
-                + f"Load pretrained {self.model_name}: \n"
-                + "==============================================================\n"
-                + f"Binocular interaction: {config.binocular_interaction} \n"
-                + f"Experiment id: {config.experiment_id} \n"
-                + f"Model: {config.resume} \n"
-                + "==============================================================\n"
-            )
+            # print(
+            #     "==============================================================\n"
+            #     + f"Load pretrained {self.model_name}: \n"
+            #     + "==============================================================\n"
+            #     + f"Binocular interaction: {config.binocular_interaction} \n"
+            #     + f"Experiment id: {config.experiment_id} \n"
+            #     + f"Pretrained model: {config.model_pretrained} \n"
+            #     + "==============================================================\n"
+            # )
+
+            self.model_pretrained = config.model_pretrained
             self.experiment_dir = os.path.join(
                 self.save_dir,
                 f"experiment_{config.experiment_id}",
             )
-            checkpoint = torch.load(
-                f"{self.experiment_dir}/{config.resume}",
-                map_location=self.device,
-                weights_only=True,
-            )
-            self._resume_checkpoint = checkpoint
-            pretrained_dict = checkpoint["state_dict"]
+            self._load_pretrained_model(self.model_pretrained)
+            # checkpoint = torch.load(
+            #     f"{self.experiment_dir}/{config.model_pretrained}",
+            #     map_location=self.device,
+            #     weights_only=True,
+            # )
+            # self._resume_checkpoint = checkpoint
+            # pretrained_dict = checkpoint["state_dict"]
 
-            # fix the keys of the state dictionary
-            unwanted_prefix = "_orig_mod."
-            for k, v in list(pretrained_dict.items()):
-                if k.startswith(unwanted_prefix):
-                    pretrained_dict[k[len(unwanted_prefix) :]] = pretrained_dict.pop(k)
-            self.model.load_state_dict(pretrained_dict)
+            # # fix the keys of the state dictionary
+            # unwanted_prefix = "_orig_mod."
+            # for k, v in list(pretrained_dict.items()):
+            #     if k.startswith(unwanted_prefix):
+            #         pretrained_dict[k[len(unwanted_prefix) :]] = pretrained_dict.pop(k)
+            # self.model.load_state_dict(pretrained_dict)
 
         # compile model
         if config.compile_mode is not None:
@@ -100,9 +103,9 @@ class EngineBase:
         self.model.to(self.device)
 
         # print out training params:
-        self.get_train_params()
+        self.__getconfig__()
 
-    def get_train_params(self):
+    def __getconfig__(self):
         print(
             "==============================================================\n"
             + "Training parameters: \n"
@@ -111,7 +114,7 @@ class EngineBase:
             + f"Binocular interaction: {self.config.binocular_interaction}\n"
             + f"Seed: {self.config.seed}\n"
             + f"Compile mode: {self.config.compile_mode}\n"
-            + f"Experiment dir: {self.experiment_dir}\n"
+            + f"Experiment directory: {self.experiment_dir}\n"
             + f"Dataset: {self.config.dataset}\n"
             + f"Batch size train: {self.config.batch_size}\n"
             + f"Batch size validation: {self.config.batch_size_val}\n"
@@ -145,12 +148,12 @@ class EngineBase:
             os.makedirs(self.save_dir)
 
         # experiment directory
-        runs = natsorted(glob.glob(os.path.join(self.save_dir, "experiment_*")))
-        if self.config.load_state:
-            run_id = self.config.experiment_id
-        else:
-            # run_id = int(runs[-1].split("_")[-1]) + 1 if runs else 0
-            run_id = self.config.seed
+        # runs = natsorted(glob.glob(os.path.join(self.save_dir, "experiment_*")))
+        # if self.config.load_state:
+        #     run_id = self.config.experiment_id
+        # else:
+        #     # run_id = int(runs[-1].split("_")[-1]) + 1 if runs else 0
+        run_id = self.config.seed
         self.experiment_dir = os.path.join(
             self.save_dir,
             f"experiment_{run_id}",
@@ -162,6 +165,36 @@ class EngineBase:
         self.pred_images_dir = os.path.join(self.experiment_dir, "pred_images")
         if not os.path.exists(self.pred_images_dir):
             os.makedirs(self.pred_images_dir)
+
+    def _load_pretrained_model(self, model_pretrained: str) -> None:
+        """
+        load pretrained model
+        """
+
+        print(
+            "==============================================================\n"
+            + f"Load pretrained {self.model_name}: \n"
+            + "==============================================================\n"
+            + f"Binocular interaction: {self.config.binocular_interaction} \n"
+            + f"Experiment id: {self.config.experiment_id} \n"
+            + f"Pretrained model: {self.config.model_pretrained} \n"
+            + "==============================================================\n"
+        )
+
+        checkpoint = torch.load(
+            f"{self.experiment_dir}/{model_pretrained}",
+            map_location=self.device,
+            weights_only=True,
+        )
+        self._resume_checkpoint = checkpoint
+        pretrained_dict = checkpoint["state_dict"]
+
+        # fix the keys of the state dictionary
+        unwanted_prefix = "_orig_mod."
+        for k, v in list(pretrained_dict.items()):
+            if k.startswith(unwanted_prefix):
+                pretrained_dict[k[len(unwanted_prefix) :]] = pretrained_dict.pop(k)
+        self.model.load_state_dict(pretrained_dict)
 
     def _build_model(self, config: ConfigBNN | ConfigGCNet) -> nn.Module:
         raise NotImplementedError
