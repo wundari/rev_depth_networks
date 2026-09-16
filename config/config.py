@@ -46,10 +46,11 @@ class Config:
     elif dataset == "sceneflow_flying":
         epochs: int = 5
 
+    # logging
     log_tqdm: bool = False  # whether to monitor loss values using tqdm
     log_interval: int = 100  # interval for tqdm logging
     eval_interval: int = 500  # interval for calculating validation error
-    n_iter_eval: int = 400  # the number of iterations for validation
+    n_iter_eval: int = 400  # the number of datasets to compute validation performance
     save_snapshot: bool = (
         True  # whether to save predicted disparity map at the end of each epoch
     )

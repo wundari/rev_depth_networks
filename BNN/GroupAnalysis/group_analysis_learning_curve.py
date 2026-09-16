@@ -5,7 +5,7 @@ from scipy import stats
 from statsmodels.stats.multitest import multipletests
 from itertools import combinations
 
-from config.config import ConfigBNN
+from config.config_bnn import ConfigBNN
 
 import seaborn as sns
 import matplotlib.pyplot as plt
@@ -29,12 +29,11 @@ class GA_LearningCurve:
 
         self.config = config
 
+        self.model_name = config.model_name
         self.interactions = ["bem", "cmm", "default", "sum_diff"]
 
         # folder location where training loss is stored
-        self.experiment_dir = (
-            f"run/{config.dataset}/bino_interaction_{config.binocular_interaction}"
-        )
+        self.experiment_dir = f"{self.model_name}/run/{config.dataset}/bino_interaction_{config.binocular_interaction}"
 
         # create folder for saving plots
         self.plot_dir = f"{self.experiment_dir}/plots"
@@ -42,7 +41,9 @@ class GA_LearningCurve:
             os.makedirs(self.plot_dir)
 
         # create folder for saving group analysis
-        self.group_dir = f"run/{config.dataset}/bino_interaction_group"
+        self.group_dir = (
+            f"{self.model_name}/run/{config.dataset}/bino_interaction_group"
+        )
         if not os.path.exists(self.group_dir):
             os.makedirs(self.group_dir)
 
@@ -75,9 +76,7 @@ class GA_LearningCurve:
         self.config.binocular_interaction = interaction
 
         # update the experiment and plot directories based on the new interaction
-        self.experiment_dir = (
-            f"run/{self.config.dataset}/bino_interaction_{interaction}"
-        )
+        self.experiment_dir = f"{self.model_name}/run/{self.config.dataset}/bino_interaction_{interaction}"
         self.plot_dir = f"{self.experiment_dir}/plots"
         if not os.path.exists(self.plot_dir):
             os.makedirs(self.plot_dir)
@@ -104,7 +103,7 @@ class GA_LearningCurve:
         for seed in self.config.seed_to_analyse:
 
             # load training loss
-            loss = np.load(f"{self.experiment_dir}/{seed}/losses_train.npy")
+            loss = np.load(f"{self.experiment_dir}/experiment_{seed}/losses_train.npy")
             losses.append(loss)
 
         # list to array
@@ -125,7 +124,7 @@ class GA_LearningCurve:
         for seed in self.config.seed_to_analyse:
 
             # load training accuracy
-            loss = np.load(f"{self.experiment_dir}/{seed}/accs_train.npy")
+            loss = np.load(f"{self.experiment_dir}/experiment_{seed}/accs_train.npy")
             accs.append(loss)
 
         # list to array
@@ -146,7 +145,7 @@ class GA_LearningCurve:
         for seed in self.config.seed_to_analyse:
 
             # load validation loss
-            loss = np.load(f"{self.experiment_dir}/{seed}/losses_val.npy")
+            loss = np.load(f"{self.experiment_dir}/experiment_{seed}/losses_val.npy")
             losses.append(loss)
 
         # list to array
@@ -167,7 +166,7 @@ class GA_LearningCurve:
         for seed in self.config.seed_to_analyse:
 
             # load validation accuracy
-            loss = np.load(f"{self.experiment_dir}/{seed}/accs_val.npy")
+            loss = np.load(f"{self.experiment_dir}/experiment_{seed}/accs_val.npy")
             accs.append(loss)
 
         # list to array
@@ -350,13 +349,13 @@ class GA_LearningCurve:
         )
 
         x_low = 0
-        x_up = 225
-        x_step = 50
-        y_low = 20
-        y_up = 61
+        x_up = 45
+        x_step = 10
+        y_low = 10
+        y_up = 65
         y_step = 10
 
-        axes.set_xlabel("Steps (x 100)")
+        axes.set_xlabel("Steps (x 500)")
         axes.set_ylabel("L1-loss")
         axes.set_xticks(np.round(np.arange(x_low, x_up, x_step), 2))
         axes.set_xticklabels(np.round(np.arange(x_low, x_up, x_step), 2))
@@ -488,13 +487,13 @@ class GA_LearningCurve:
         )
 
         x_low = 0
-        x_up = 225
-        x_step = 50
-        y_low = 20
-        y_up = 61
+        x_up = 45
+        x_step = 10
+        y_low = 10
+        y_up = 65
         y_step = 10
 
-        axes.set_xlabel("Steps (x 100)")
+        axes.set_xlabel("Steps (x 500)")
         axes.set_ylabel("L1-loss")
         axes.set_xticks(np.round(np.arange(x_low, x_up, x_step), 2))
         axes.set_xticklabels(np.round(np.arange(x_low, x_up, x_step), 2))
@@ -616,13 +615,13 @@ class GA_LearningCurve:
         )
 
         x_low = 0
-        x_up = 225
-        x_step = 50
-        y_low = 20
-        y_up = 61
+        x_up = 45
+        x_step = 10
+        y_low = 10
+        y_up = 65
         y_step = 10
 
-        axes.set_xlabel("Steps (x 100)")
+        axes.set_xlabel("Steps (x 500)")
         axes.set_ylabel("L1-loss")
         axes.set_xticks(np.round(np.arange(x_low, x_up, x_step), 2))
         axes.set_xticklabels(np.round(np.arange(x_low, x_up, x_step), 2))
@@ -716,13 +715,13 @@ class GA_LearningCurve:
         )
 
         x_low = 0
-        x_up = 225
-        x_step = 50
+        x_up = 45
+        x_step = 10
         y_low = 0.0
-        y_up = 0.61
+        y_up = 0.65
         y_step = 0.1
 
-        axes.set_xlabel("Steps (x 100)")
+        axes.set_xlabel("Steps (x 500)")
         axes.set_ylabel("3-pix accuracy")
         axes.set_xticks(np.round(np.arange(x_low, x_up, x_step), 2))
         axes.set_xticklabels(np.round(np.arange(x_low, x_up, x_step), 2))
@@ -844,13 +843,13 @@ class GA_LearningCurve:
         )
 
         x_low = 0
-        x_up = 225
-        x_step = 50
+        x_up = 45
+        x_step = 10
         y_low = 0.0
-        y_up = 0.61
+        y_up = 0.65
         y_step = 0.1
 
-        axes.set_xlabel("Steps (x 100)")
+        axes.set_xlabel("Steps (x 500)")
         axes.set_ylabel("3-pix accuracy")
         axes.set_xticks(np.round(np.arange(x_low, x_up, x_step), 2))
         axes.set_xticklabels(np.round(np.arange(x_low, x_up, x_step), 2))
@@ -972,13 +971,13 @@ class GA_LearningCurve:
         )
 
         x_low = 0
-        x_up = 225
-        x_step = 50
+        x_up = 45
+        x_step = 10
         y_low = 0.0
-        y_up = 0.61
+        y_up = 0.65
         y_step = 0.1
 
-        axes.set_xlabel("Steps (x 100)")
+        axes.set_xlabel("Steps (x 500)")
         axes.set_ylabel("3-pix accuracy")
         axes.set_xticks(np.round(np.arange(x_low, x_up, x_step), 2))
         axes.set_xticklabels(np.round(np.arange(x_low, x_up, x_step), 2))

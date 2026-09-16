@@ -1,13 +1,9 @@
 # %% load necessary modules
 import torch
-import torch.nn.functional as F
-
 from torch import Tensor
-from torch.utils.data import DataLoader
-from torchvision.transforms import transforms
 
-from modules.bnn import build_bnn
-from config.config import ConfigBNN
+from BNN.modules.bnn import build_bnn
+from config.config_bnn import ConfigBNN
 
 import numpy as np
 import pandas as pd
@@ -22,16 +18,14 @@ import pingouin as pg
 from statsmodels.stats.multicomp import pairwise_tukeyhsd
 import statsmodels.stats.multicomp as mc
 
-from RDS.DataHandler_RDS import RDS_Handler, DatasetRDS
-from utilities.misc import NestedTensor
-
 
 # %%
 class GA_Superposition:
 
-    def __init__(self, config: ConfigBNN, params_rds: dict):
+    def __init__(self, config: ConfigBNN):
 
         self.config = config
+        self.model_name = config.model_name
         self.dataset = config.dataset
         self.binocular_interaction = config.binocular_interaction
         self.interactions = config.interactions
@@ -40,32 +34,11 @@ class GA_Superposition:
         self.iter = config.iter_to_load
         self.device = config.device
 
-        # rds parameters
-        self.target_disp = params_rds[
-            "target_disp"
-        ]  # RDS target disparity (pix) to be analyzed
-        self.n_rds_each_disp = params_rds[
-            "n_rds_each_disp"
-        ]  # n_rds for each disparity magnitude in disp_ct_pix
-        self.dotDens_list = params_rds["dotDens_list"]  # dot density
-        self.rds_type = params_rds[
-            "rds_type"
-        ]  # ards: 0.0, crds: 1.0, hmrds: 0.5, urds: -1.0
-        self.dotMatch_list = params_rds["dotMatch_list"]  # [0.0, 0.5, 1.0] dot match
-        self.background_flag = params_rds["background_flag"]  # 1: with cRDS background
-        self.pedestal_flag = params_rds[
-            "pedestal_flag"
-        ]  # 1: use pedestal to ensure rds disparity > 0
-        self.batch_size_rds = params_rds[
-            "batch_size_rds"
-        ]  # batch size for RDS generation
-        self.disp_ct_pix_list = [self.target_disp, -self.target_disp]
-
         # set up experiment directory
         self.experiment_dir = (
-            f"run/{self.dataset}/"
+            f"{self.model_name}/run/{self.dataset}/"
             + f"bino_interaction_{self.binocular_interaction}/"
-            + f"{self.seed}"
+            + f"experiment_{self.seed}"
         )
 
         # create folder for saving plots of a given interaction
@@ -76,7 +49,7 @@ class GA_Superposition:
 
         # create folder for saving group analysis
         # (all interactions are combined)
-        self.group_dir = f"run/{self.dataset}/bino_interaction_group"
+        self.group_dir = f"{self.model_name}/run/{self.dataset}/bino_interaction_group"
         if not os.path.exists(self.group_dir):
             os.makedirs(self.group_dir)
 
@@ -167,9 +140,9 @@ class GA_Superposition:
 
         # update the experiment directories based on the new interaction
         self.experiment_dir = (
-            f"run/{self.dataset}/"
+            f"{self.model_name}/run/{self.dataset}/"
             + f"bino_interaction_{self.binocular_interaction}/"
-            + f"{self.seed}"
+            + f"experiment_{self.seed}"
         )
 
         # update directory for storing plots of a given interaction
@@ -222,9 +195,9 @@ class GA_Superposition:
         print(
             f"BNN was successfully loaded to {self.device}. \n"
             + f"BNN model: {resume_path}\n"
-            + f"binocular interaction: {self.binocular_interaction}\n"
-            + f"compile mode: {self.config.compile_mode}\n"
-            + f"experiment dir: {self.experiment_dir}\n"
+            + f"Binocular interaction: {self.binocular_interaction}\n"
+            + f"Compile mode: {self.config.compile_mode}\n"
+            + f"Experiment dir: {self.experiment_dir}\n"
         )
 
     def get_conv_names_and_weights(self) -> tuple[list[Tensor], list[Tensor]]:
@@ -503,6 +476,12 @@ class GA_Superposition:
         different interaction types.
         """
 
+        # Match the numeric codes assigned by enumerate(self.interactions) below.
+        interaction_names = dict(enumerate(self.interactions))
+        interaction_legend = "; ".join(
+            f'{code} = "{name}"' for code, name in interaction_names.items()
+        )
+
         # gather all feat_dim and store it into records
         # calculate the # rows
         temp = torch.load(f"{self.superposition_dir}/feat_dimensionality_all_layers.pt")
@@ -568,6 +547,9 @@ class GA_Superposition:
         aov2 = pg.anova(data=df, dv="feat_dim", between=["interaction", "layer"])
         print(aov2)
 
+        # Include the code legend without changing the statistical calculation.
+        aov2["interaction_legend"] = interaction_legend
+
         # save 2-way anova to csv
         aov2.to_csv(
             f"{self.group_stat_dir}/feat_dim_anova2way.csv",
@@ -604,6 +586,13 @@ class GA_Superposition:
             data=post_hocs._results_table.data[1:],  # skip header row
             columns=post_hocs._results_table.data[0],  # use header row
         )
+
+        # Preserve numeric group codes and all existing statistical columns.
+        for column in ("group1", "group2"):
+            posthoc_df[f"{column}_name"] = pd.to_numeric(
+                posthoc_df[column], errors="raise"
+            ).map(interaction_names)
+        posthoc_df["interaction_legend"] = interaction_legend
 
         # Save to CSV
         posthoc_df.to_csv(

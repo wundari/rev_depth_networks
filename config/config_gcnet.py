@@ -8,8 +8,8 @@ from dataclasses_json import dataclass_json
 class ConfigGCNet(Config):
 
     model_name: str = "GC_Net"
-    binocular_interaction: str = "default"
-    seed: int = 16476
+    binocular_interaction: str = "bem"
+    seed: int = 94750
 
     # resume from checkpoint
     load_state: bool = False

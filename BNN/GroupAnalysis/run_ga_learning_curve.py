@@ -1,7 +1,7 @@
 # %% necessary modules
 
-from GroupAnalysis.group_analysis_learning_curve import GA_LearningCurve
-from config.config import ConfigBNN
+from BNN.GroupAnalysis.group_analysis_learning_curve import GA_LearningCurve
+from config.config_bnn import ConfigBNN
 
 # %% load config and create GA_LearningCurve object
 config = ConfigBNN()
