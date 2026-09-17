@@ -867,8 +867,8 @@ class RDSAnalysis(EngineBase):
         plt.subplots_adjust(wspace=0.2, hspace=0.0)
 
         if self.pedestal_flag:
-            v_min = -4 * self.target_disp
-            v_max = 4 * self.target_disp
+            v_min = 0
+            v_max = 2 * self.target_disp
         else:
             c = 2
             v_min = -c * self.target_disp

@@ -173,26 +173,34 @@ class EngineBase:
         )
 
         # build model from scratch
-        self.model = self._build_model(self.config)
+        model = self._build_model(self.config)
 
-        # load weights from checkpoint
+        # Load checkpoints onto CPU, then copy model weights into the existing model
         filename = os.path.join(self.experiment_dir, self.config.model_pretrained)
         if not os.path.exists(filename):
             raise FileNotFoundError(f"Pretrained model not found: {filename}")
         checkpoint = torch.load(
             filename,
-            map_location=self.device,
+            map_location="cpu",
             weights_only=True,
         )
         self._resume_checkpoint = checkpoint
-        pretrained_dict = checkpoint["state_dict"]
-
+        state = checkpoint["state_dict"]
         # fix the keys of the state dictionary
         unwanted_prefix = "_orig_mod."
-        for k, v in list(pretrained_dict.items()):
-            if k.startswith(unwanted_prefix):
-                pretrained_dict[k[len(unwanted_prefix) :]] = pretrained_dict.pop(k)
-        self.model.load_state_dict(pretrained_dict)
+        torch.nn.modules.utils.consume_prefix_in_state_dict_if_present(
+            state, unwanted_prefix
+        )
+
+        # # fix the keys of the state dictionary
+        # unwanted_prefix = "_orig_mod."
+        # for k, v in list(state.items()):
+        #     if k.startswith(unwanted_prefix):
+        #         state[k[len(unwanted_prefix) :]] = state.pop(k)
+
+        model.load_state_dict(state, strict=True)
+        self.model = model.to(self.device)
+        self.model.eval()
 
     def _build_model(self, config: ConfigBNN | ConfigGCNet) -> nn.Module:
         raise NotImplementedError

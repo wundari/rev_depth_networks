@@ -3,7 +3,7 @@ import numpy as np
 from sklearnex import patch_sklearn
 
 patch_sklearn(verbose=False)
-from sklearn import svm
+from sklearnex.svm import SVC
 
 from joblib import Parallel, delayed
 from jaxtyping import Float
@@ -73,7 +73,7 @@ def load_test_data(
     file_dir: str,
     x_mean: Float[np.ndarray, "1 1 w"],
     x_std: Float[np.ndarray, "1 1 w"],
-    background_flag: bool = 1,
+    background_flag: bool = True,
 ):
     """
     load aRDS and hmRDS predicted disparity map for test dataset in
@@ -168,12 +168,6 @@ def xDecode_single_bootstrap(
     n_dotDens = len(dotDens_list)
     n_samples = X_train.shape[1]
     n_train = int(split_train_ratio * n_samples)
-    score_ards = np.empty(n_dotDens, dtype=np.float32)
-    score_hmrds = np.empty(n_dotDens, dtype=np.float32)
-    score_crds = np.empty(n_dotDens, dtype=np.float32)
-    predict_ards = np.empty((n_dotDens, n_samples), dtype=np.int8)
-    predict_hmrds = np.empty((n_dotDens, n_samples), dtype=np.int8)
-    predict_crds = np.empty((n_dotDens, n_samples - n_train), dtype=np.int8)
 
     # generate random numbers for splitting train and test dataset
     idx = np.random.permutation(n_samples)
@@ -185,11 +179,21 @@ def xDecode_single_bootstrap(
         -1, X_train.shape[-1]
     )  # [n_dotDens * n_train, w]
     Y_train_split = Y_train[:, idx_train].reshape(-1)  # [n_dotDens * n_train]
+    x_mean = X_train_split.mean(axis=0, keepdims=True)  # [1, w]
+    x_std = X_train_split.std(axis=0, keepdims=True)  # [1, w]
+    x_std[x_std == 0] = 1e-6
 
     # train classifier
-    clf = svm.SVC(kernel="linear", cache_size=1000)
-    clf.fit(X_train_split, Y_train_split)
+    clf = SVC(kernel="linear", cache_size=1000)
+    # clf.fit(X_train_split, Y_train_split)
+    clf.fit((X_train_split - x_mean) / x_std, Y_train_split)
 
+    score_ards = np.empty(n_dotDens, dtype=np.float32)
+    score_hmrds = np.empty(n_dotDens, dtype=np.float32)
+    score_crds = np.empty(n_dotDens, dtype=np.float32)
+    predict_ards = np.empty((n_dotDens, n_samples), dtype=np.int8)
+    predict_hmrds = np.empty((n_dotDens, n_samples), dtype=np.int8)
+    predict_crds = np.empty((n_dotDens, n_samples - n_train), dtype=np.int8)
     for dd in range(n_dotDens):
         print(
             f"{iter_bootstrap+1}/{n_bootstrap} SVM on RDS with dotDens: {dotDens_list[dd]:.1f}"
@@ -197,23 +201,29 @@ def xDecode_single_bootstrap(
 
         ## evaluate on ards
         # predict output
-        predict_ards[dd] = clf.predict(X_ards[dd])
+        # predict_ards[dd] = clf.predict(X_ards[dd])
+        predict_ards[dd] = clf.predict(((X_ards[dd] - x_mean) / x_std))
         # compute score
-        score_ards[dd] = clf.score(X_ards[dd], Y_ards[dd])
+        # score_ards[dd] = clf.score(X_ards[dd], Y_ards[dd])
+        score_ards[dd] = (predict_ards[dd] == Y_ards[dd]).mean()
 
         ## evaluate on hmrds
         # predict output
-        predict_hmrds[dd] = clf.predict(X_hmrds[dd])
+        # predict_hmrds[dd] = clf.predict(X_hmrds[dd])
+        predict_hmrds[dd] = clf.predict(((X_hmrds[dd] - x_mean) / x_std))
         # compute score
-        score_hmrds[dd] = clf.score(X_hmrds[dd], Y_hmrds[dd])
+        # score_hmrds[dd] = clf.score(X_hmrds[dd], Y_hmrds[dd])
+        score_hmrds[dd] = (predict_hmrds[dd] == Y_hmrds[dd]).mean()
 
         ## evaluate crds test subset
         X_test = X_train[dd, idx_test]
         Y_test = Y_train[dd, idx_test]
         # predict output
-        predict_crds[dd] = clf.predict(X_test)
+        # predict_crds[dd] = clf.predict(X_test)
+        predict_crds[dd] = clf.predict(((X_test - x_mean) / x_std))
         # compute score
-        score_crds[dd] = clf.score(X_test, Y_test)
+        # score_crds[dd] = clf.score(X_test, Y_test)
+        score_crds[dd] = (predict_crds[dd] == Y_test).mean()
 
     return (
         score_ards,

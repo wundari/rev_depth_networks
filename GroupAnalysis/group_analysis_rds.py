@@ -204,7 +204,7 @@ class GA_RDS(RDSAnalysis):
         fig.text(
             0.5,
             1.0,
-            "BNN depth performance all seeds \n"
+            f"{self.model_name} depth performance all seeds \n"
             + f"({self.config.binocular_interaction})",
             ha="center",
         )

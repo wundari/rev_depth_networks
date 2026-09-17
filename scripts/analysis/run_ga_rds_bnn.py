@@ -1,24 +1,26 @@
 def main():
 
     # load necessary modules
-    from config.config_gcnet import ConfigGCNet
+    from config.config_bnn import ConfigBNN
     from GroupAnalysis.group_analysis_rds import GA_RDS
 
-    # set up GCNet model and RDS analysis
-    config = ConfigGCNet()
+    # set up BNN model and RDS analysis
+    config = ConfigBNN()
     ga_rds = GA_RDS(config)
 
     # compute disparity map
-    for interaction in ga_rds.config.interactions:
+    # interactions = ga_rds.config.interactions
+    interactions = ["cmm"]
+    for interaction in interactions:
         ga_rds.compute_disp_map_all_seeds(interaction, ga_rds.config.n_bootstrap)
 
     # plot depth performance averaged across all seeds
     save_flag = True
-    for interaction in ga_rds.config.interactions:
+    for interaction in interactions:
         ga_rds.plotLine_xDecode_all_seeds(interaction, save_flag)
 
     # plot depth performance for every seeds
-    for interaction in ga_rds.config.interactions:
+    for interaction in interactions:
         for s, seed in enumerate(ga_rds.config.seed_to_analyse):
 
             if interaction == "default":
