@@ -59,27 +59,15 @@ class EngineBase:
         # save config file
         self.save_config()
 
-        # load model
-        self.model = self._build_model(config)
-
         # load pre-trained BNN, if provided
         if config.load_state:
-            # print(
-            #     "==============================================================\n"
-            #     + f"Load pretrained {self.model_name}: \n"
-            #     + "==============================================================\n"
-            #     + f"Binocular interaction: {config.binocular_interaction} \n"
-            #     + f"Experiment id: {config.experiment_id} \n"
-            #     + f"Pretrained model: {config.model_pretrained} \n"
-            #     + "==============================================================\n"
-            # )
 
             self.model_pretrained = config.model_pretrained
             self.experiment_dir = os.path.join(
                 self.save_dir,
                 f"experiment_{config.experiment_id}",
             )
-            self._load_pretrained_model(self.model_pretrained)
+            self._load_pretrained_model()
             # checkpoint = torch.load(
             #     f"{self.experiment_dir}/{config.model_pretrained}",
             #     map_location=self.device,
@@ -94,6 +82,9 @@ class EngineBase:
             #     if k.startswith(unwanted_prefix):
             #         pretrained_dict[k[len(unwanted_prefix) :]] = pretrained_dict.pop(k)
             # self.model.load_state_dict(pretrained_dict)
+        else:
+            # build model from scratch
+            self.model = self._build_model(config)
 
         # compile model
         if config.compile_mode is not None:
@@ -166,7 +157,7 @@ class EngineBase:
         if not os.path.exists(self.pred_images_dir):
             os.makedirs(self.pred_images_dir)
 
-    def _load_pretrained_model(self, model_pretrained: str) -> None:
+    def _load_pretrained_model(self) -> None:
         """
         load pretrained model
         """
@@ -181,8 +172,15 @@ class EngineBase:
             + "==============================================================\n"
         )
 
+        # build model from scratch
+        self.model = self._build_model(self.config)
+
+        # load weights from checkpoint
+        filename = os.path.join(self.experiment_dir, self.config.model_pretrained)
+        if not os.path.exists(filename):
+            raise FileNotFoundError(f"Pretrained model not found: {filename}")
         checkpoint = torch.load(
-            f"{self.experiment_dir}/{model_pretrained}",
+            filename,
             map_location=self.device,
             weights_only=True,
         )

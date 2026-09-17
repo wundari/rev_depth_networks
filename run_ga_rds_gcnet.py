@@ -1,0 +1,48 @@
+def main():
+
+    # load necessary modules
+    from config.config_gcnet import ConfigGCNet
+    from GroupAnalysis.group_analysis_rds import GA_RDS
+
+    # set up GCNet model and RDS analysis
+    config = ConfigGCNet()
+    ga_rds = GA_RDS(config)
+
+    # compute disparity map
+    for interaction in ga_rds.config.interactions:
+        ga_rds.compute_disp_map_all_seeds(interaction, ga_rds.config.n_bootstrap)
+
+    # plot depth performance averaged across all seeds
+    save_flag = True
+    for interaction in ga_rds.config.interactions:
+        ga_rds.plotLine_xDecode_all_seeds(interaction, save_flag)
+
+    # plot depth performance for every seeds
+    for interaction in ga_rds.config.interactions:
+        for s, seed in enumerate(ga_rds.config.seed_to_analyse):
+
+            if interaction == "default":
+                epoch, iter = ga_rds.config.epoch_iter_to_load_default[s]
+            elif interaction == "bem":
+                epoch, iter = ga_rds.config.epoch_iter_to_load_bem[s]
+            elif interaction == "cmm":
+                epoch, iter = ga_rds.config.epoch_iter_to_load_cmm[s]
+            else:  # sum_diff
+                epoch, iter = ga_rds.config.epoch_iter_to_load_sum_diff[s]
+
+            # update network configuration and directory addresses
+            ga_rds.update_network_config(interaction, seed, epoch, iter)
+
+            # plot cross-decoding performance
+            ga_rds.plotLine_xDecode(save_flag)
+
+            # plot predicted disparity map for a single bootstrap
+            ga_rds.plotHeat_dispMap(save_flag)
+
+            # plot predicted disparity map averaged across all bootstrap
+            ga_rds.plotHeat_dispMap_avg(save_flag)
+
+
+# %%
+if __name__ == "__main__":
+    main()

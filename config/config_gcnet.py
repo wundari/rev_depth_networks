@@ -12,12 +12,12 @@ class ConfigGCNet(Config):
     seed: int = 94750
 
     # resume from checkpoint
-    load_state: bool = False
+    load_state: bool = True
     if load_state:
         compile_mode = None
     experiment_id: int = seed  # experiment id for loading pretrained DNN
-    epoch_to_load = 9
-    iter_to_load = 16500
+    epoch_to_load = 8
+    iter_to_load = 15500
     model_pretrained: str = (
         f"epoch_{epoch_to_load}_iter_{iter_to_load}_model_best.pth.tar"  # pretrained file name, e.g: epoch_1_model.pth.tar
     )
@@ -28,72 +28,72 @@ class ConfigGCNet(Config):
             (9, 16500),  # seed 1618
             (9, 16000),  # seed 11364
             (9, 16500),  # seed 16476
-            (7, 16500),  # seed 27829
-            (7, 17300),  # seed 35154
-            (8, 19300),  # seed 35744
-            (9, 20900),  # seed 36675
-            (9, 19800),  # seed 43798
-            (6, 14200),  # seed 55826
-            (5, 12700),  # seed 59035
-            (7, 16000),  # seed 65190
-            (9, 21000),  # seed 82220
-            (9, 21000),  # seed 94750
+            (9, 17000),  # seed 27829
+            (9, 17000),  # seed 35154
+            (9, 16000),  # seed 35744
+            (9, 17589),  # seed 36675
+            (9, 17500),  # seed 43798
+            (9, 17589),  # seed 55826
+            (9, 16500),  # seed 59035
+            (9, 16000),  # seed 65190
+            (9, 16500),  # seed 82220
+            (9, 16500),  # seed 94750
         ]
     )
 
     # bino_interaction: bem, batch size 4
     epoch_iter_to_load_bem: list[tuple[int, int]] = field(
         default_factory=lambda: [
-            (7, 15500),  # seed 1618
-            (9, 20200),  # seed 11364
-            (9, 21500),  # seed 16476
-            (9, 19500),  # seed 27829
-            (8, 18300),  # seed 35154
-            (8, 19300),  # seed 35744
+            (9, 16500),  # seed 1618
+            (9, 17500),  # seed 11364
+            (9, 16500),  # seed 16476
+            (9, 17000),  # seed 27829
+            (9, 17500),  # seed 35154
+            (9, 16000),  # seed 35744
             (9, 20900),  # seed 36675
-            (6, 14300),  # seed 43798
-            (8, 18400),  # seed 55826
-            (7, 16400),  # seed 59035
-            (7, 16000),  # seed 65190
-            (9, 21000),  # seed 82220
-            (7, 15800),  # seed 94750
+            (9, 16500),  # seed 43798
+            (9, 17589),  # seed 55826
+            (9, 16500),  # seed 59035
+            (9, 17000),  # seed 65190
+            (8, 15500),  # seed 82220
+            (8, 15500),  # seed 94750
         ]
     )
 
     # bino_interaction: cmm, batch size 4
     epoch_iter_to_load_cmm: list[tuple[int, int]] = field(
         default_factory=lambda: [
-            (8, 18100),  # seed 1618
-            (9, 21300),  # seed 11364
-            (8, 18100),  # seed 16476
-            (7, 16500),  # seed 27829
-            (7, 17300),  # seed 35154
+            (9, 16000),  # seed 1618
+            (9, 17500),  # seed 11364
+            (8, 15500),  # seed 16476
+            (9, 17500),  # seed 27829
+            (9, 16500),  # seed 35154
             (6, 14800),  # seed 35744
-            (9, 20900),  # seed 36675
-            (6, 14300),  # seed 43798
-            (6, 14200),  # seed 55826
-            (5, 12700),  # seed 59035
-            (7, 16000),  # seed 65190
-            (9, 21000),  # seed 82220
-            (9, 21100),  # seed 94750
+            (9, 17589),  # seed 36675
+            (9, 17000),  # seed 43798
+            (9, 17500),  # seed 55826
+            (9, 16500),  # seed 59035
+            (7, 14000),  # seed 65190
+            (9, 17589),  # seed 82220
+            (9, 17500),  # seed 94750
         ]
     )
 
     # bino_interaction: sum_diff, batch size 4
     epoch_iter_to_load_sum_diff: list[tuple[int, int]] = field(
         default_factory=lambda: [
-            (8, 18100),  # seed 1618
-            (7, 15800),  # seed 11364
-            (8, 18100),  # seed 16476
-            (7, 16500),  # seed 27829
-            (7, 17300),  # seed 35154
-            (8, 19300),  # seed 35744
-            (9, 20900),  # seed 36675
-            (6, 14300),  # seed 43798
-            (6, 14200),  # seed 55826
-            (8, 17700),  # seed 59035
-            (7, 16000),  # seed 65190
-            (9, 21000),  # seed 82220
-            (9, 21000),  # seed 94750
+            (9, 16500),  # seed 1618
+            (8, 14500),  # seed 11364
+            (9, 16000),  # seed 16476
+            (8, 15500),  # seed 27829
+            (9, 17000),  # seed 35154
+            (9, 16000),  # seed 35744
+            (9, 17589),  # seed 36675
+            (9, 17500),  # seed 43798
+            (9, 17500),  # seed 55826
+            (9, 16500),  # seed 59035
+            (8, 15500),  # seed 65190
+            (9, 17589),  # seed 82220
+            (9, 17500),  # seed 94750
         ]
     )

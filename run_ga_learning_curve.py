@@ -1,12 +1,16 @@
 # %% necessary modules
 
 from GroupAnalysis.group_analysis_learning_curve import GA_LearningCurve
-from config.config import ConfigGCNet
+from config.config_bnn import ConfigBNN
+from config.config_gcnet import ConfigGCNet
 
 # %% load config and create GA_LearningCurve object
-config = ConfigGCNet()
+config = ConfigBNN()
+# config = ConfigGCNet()
 ga = GA_LearningCurve(config)
 
+# %%
+# interactions = ["default", "bem", "cmm", "sum_diff"]
 for interaction in ga.interactions:
     # interaction = "bem"
     ga.update_bino_interaction(interaction)
@@ -18,7 +22,7 @@ for interaction in ga.interactions:
     # plot training and validation loss and accuracy, for each interaction
     save_flag = True
     ga.plotLine_loss_all_seeds(train_losses, val_losses, save_flag)
-    ga.plotLine_acc_all_seeds(train_accs, val_accs, save_flag)
+    ga.plotLine_acc(train_accs, val_accs, save_flag)
 
 # %% statistical analysis
 ga.compute_statistics_all()
@@ -52,6 +56,7 @@ train_acc_sum_diff = ga.get_train_acc()
 val_loss_sum_diff = ga.get_val_loss()
 val_acc_sum_diff = ga.get_val_acc()
 
+save_flag = True
 ga.plotLine_train_loss_all_interactions(
     train_loss_default, train_loss_bem, train_loss_cmm, train_loss_sum_diff, save_flag
 )

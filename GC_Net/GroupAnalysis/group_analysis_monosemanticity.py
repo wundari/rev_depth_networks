@@ -19,10 +19,10 @@ from scipy.stats import sem
 from statsmodels.stats.anova import AnovaRM
 import statsmodels.formula.api as smf
 
-from GroupAnalysis.group_analysis import GA
+from GC_Net.GroupAnalysis.group_analysis import GA
 
 # from modules.bnn import build_bnn
-from config.config import ConfigGCNet
+from config.config_gcnet import ConfigGCNet
 from RDS.DataHandler_RDS import RDS_Handler, DatasetRDS
 from utilities.misc import NestedTensor
 
@@ -99,9 +99,9 @@ class GA_Monosemanticity(GA):
 
         # update the experiment directories based on the new interaction
         self.experiment_dir = (
-            f"run/{self.dataset}/"
+            f"{self.model_name}/run/{self.dataset}/"
             + f"bino_interaction_{self.binocular_interaction}/"
-            + f"{self.seed}"
+            + f"experiment_{self.seed}"
         )
 
         # update directory for storing plots of a given interaction

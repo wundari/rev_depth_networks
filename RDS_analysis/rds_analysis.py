@@ -12,6 +12,7 @@ from scipy.stats import sem
 import os
 import glob
 from pathlib import Path
+import gc
 
 from engine.engine_base import EngineBase
 from RDS.DataHandler_RDS import RDS_Handler, DatasetRDS
@@ -517,7 +518,7 @@ class RDSAnalysis(EngineBase):
                 bbox_inches="tight",
             )
 
-    def plotLine_xDecode(self, save_flag):
+    def plotLine_xDecode(self, save_flag: bool = False):
         """
         Plot cross-decoding performance as a function of dot density.
         """
@@ -531,7 +532,7 @@ class RDSAnalysis(EngineBase):
         sns.set_theme()
         sns.set_theme(context="paper", style="white", font_scale=3, palette="deep")
 
-        figsize = (9, 9)
+        figsize = (8, 8)
         n_row = 1
         n_col = 1
 
@@ -542,14 +543,15 @@ class RDSAnalysis(EngineBase):
         fig.text(
             0.5,
             1.0,
-            "Cross-decoding performance\n"
-            + f"target disp: {self.target_disp}, with cRDS background",
+            "BNN depth performance single seed\n"
+            + f"({self.config.binocular_interaction})",
             ha="center",
         )
         fig.text(-0.05, 0.5, "Prediction acc.", va="center", rotation=90)
         fig.text(0.5, -0.04, "Dot density", ha="center")
 
         fig.tight_layout()
+
         plt.subplots_adjust(wspace=0.2, hspace=0.3)
 
         score_ards_mean = score_ards_bootstrap.mean(axis=0)
@@ -559,40 +561,52 @@ class RDSAnalysis(EngineBase):
         score_crds_mean = score_crds_bootstrap.mean(axis=0)
         score_crds_std = score_crds_bootstrap.std(axis=0)
 
+        colors = ["#6a5acd", "#00CED1", "#333333"]
         ## plot the one standard deviation for cRDS vs aRDS
-        x = np.array(self.dotDens_list)
+        x = np.array(self.dotDens_list) * 100
         y = np.array(score_ards_mean)
-        y_err = np.array(score_ards_std)
-        axes.errorbar(x, y, yerr=y_err, lw=3, c="red", ls="-", capsize=7)
-
-        # plot the marker
-        markersize = 12
-        axes.plot(x, y, "o", markersize=markersize, c="red")
+        axes.plot(x, y, linewidth=2, color=colors[0], label="cRDS vs. aRDS")
+        axes.plot(x, y, "o", markersize=12, color=colors[0])
+        axes.fill_between(
+            x,
+            y - score_ards_std,
+            y + score_ards_std,
+            color=colors[0],
+            alpha=0.2,
+        )
 
         ## plot the error bar for cRDS vs hmRDS
         y = np.array(score_hmrds_mean)
-        y_err = np.array(score_hmrds_std)
-        axes.errorbar(x, y, yerr=y_err, lw=3, c="green", ls="-", capsize=7)
-
-        # plot the marker
-        axes.plot(x, y, "o", markersize=markersize, c="green")
+        axes.plot(x, y, linewidth=2, color=colors[1], label="cRDS vs. hmRDS")
+        axes.plot(x, y, "o", markersize=12, color=colors[1])
+        axes.fill_between(
+            x,
+            y - score_hmrds_std,
+            y + score_hmrds_std,
+            color=colors[1],
+            alpha=0.2,
+        )
 
         ## plot the one standard deviation for cRDS
         y = np.array(score_crds_mean)
-        y_err = np.array(score_crds_std)
-        axes.errorbar(x, y, yerr=y_err, lw=3, c="blue", ls="-", capsize=7)
-
-        # plot the marker
-        axes.plot(x, y, "o", markersize=markersize, c="blue")
+        axes.plot(x, y, linewidth=2, color=colors[2], label="cRDS")
+        axes.plot(x, y, "o", markersize=12, color=colors[2])
+        axes.fill_between(
+            x,
+            y - score_crds_std,
+            y + score_crds_std,
+            color=colors[0],
+            alpha=0.2,
+        )
 
         # plot chance level
-        axes.plot([0, 1], [0.5, 0.5], "k--", linewidth=3)
+        axes.hlines([0.5], xmin=0, xmax=100, colors="red", linestyles="--", linewidth=3)
 
-        x_low = 0.0
-        x_up = 1.05
-        x_step = 0.2
+        x_low = 0
+        x_up = 105
+        x_step = 20
         y_low = 0.0
-        y_up = 1.05
+        y_up = 1.1
         y_step = 0.2
 
         axes.set_xticks(np.round(np.arange(x_low, x_up, x_step), 2))
@@ -601,7 +615,7 @@ class RDSAnalysis(EngineBase):
         axes.set_yticklabels(np.round(np.arange(y_low, y_up, y_step), 2))
 
         axes.set_xlim(x_low, x_up)
-        axes.set_ylim(y_low - 0.05, y_up)
+        axes.set_ylim(y_low, y_up)
 
         # Hide the right and top spines
         axes.spines["right"].set_visible(False)
@@ -612,18 +626,27 @@ class RDSAnalysis(EngineBase):
         axes.xaxis.set_ticks_position("bottom")
         # axes.tick_params(direction='in', length=4, width=1)
 
-        plt.legend(["cRDS vs. aRDS", "cRDS vs. hmRDS", "cRDS"], fontsize=20)
+        plt.legend(loc="lower right", fontsize=20, frameon=False)
         # bbox_to_anchor=(0.525, 0.95))
 
         if save_flag == 1:
             if not os.path.exists(f"{self.xDecode_dir}/Plots"):
-                os.mkdir(f"{self.xDecode_dir}/Plots")
+                os.makedirs(f"{self.xDecode_dir}/Plots")
 
             fig.savefig(
                 f"{self.xDecode_dir}/Plots/PlotScatter_xDecode.pdf",
                 dpi=600,
                 bbox_inches="tight",
             )
+
+        # Clear the current axes.
+        plt.cla()
+        # Clear the current figure.
+        plt.clf()
+        # Closes all the figure windows.
+        plt.close("all")
+        plt.close(fig)
+        gc.collect()
 
     def plotLine_xDecode_avg_seed(self, dataset_name, save_flag):
         """

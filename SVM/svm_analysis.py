@@ -2,7 +2,7 @@
 import numpy as np
 from sklearnex import patch_sklearn
 
-patch_sklearn()
+patch_sklearn(verbose=False)
 from sklearn import svm
 
 from joblib import Parallel, delayed

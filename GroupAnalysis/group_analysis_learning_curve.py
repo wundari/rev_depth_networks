@@ -5,14 +5,14 @@ from scipy import stats
 from statsmodels.stats.multitest import multipletests
 from itertools import combinations
 
-from config.config import ConfigGCNet
+from config.config_bnn import ConfigBNN
+from config.config_gcnet import ConfigGCNet
 
 import seaborn as sns
 import matplotlib.pyplot as plt
 
 import os
 import json
-from pathlib import Path
 from jaxtyping import Float
 
 
@@ -26,16 +26,15 @@ class GA_LearningCurve:
     seeds, and provides methods to plot these metrics.
     """
 
-    def __init__(self, config: ConfigGCNet):
+    def __init__(self, config: ConfigBNN | ConfigGCNet):
 
         self.config = config
 
-        self.interactions = list(config.interactions)
+        self.model_name = config.model_name
+        self.interactions = ["bem", "cmm", "default", "sum_diff"]
 
         # folder location where training loss is stored
-        self.experiment_dir = (
-            f"run/{config.dataset}/bino_interaction_{config.binocular_interaction}"
-        )
+        self.experiment_dir = f"{self.model_name}/run/{config.dataset}/bino_interaction_{config.binocular_interaction}"
 
         # create folder for saving plots
         self.plot_dir = f"{self.experiment_dir}/plots"
@@ -43,7 +42,9 @@ class GA_LearningCurve:
             os.makedirs(self.plot_dir)
 
         # create folder for saving group analysis
-        self.group_dir = f"run/{config.dataset}/bino_interaction_group"
+        self.group_dir = (
+            f"{self.model_name}/run/{config.dataset}/bino_interaction_group"
+        )
         if not os.path.exists(self.group_dir):
             os.makedirs(self.group_dir)
 
@@ -58,11 +59,11 @@ class GA_LearningCurve:
             os.makedirs(self.group_stat_dir)
 
         # save config
-        # Analysis must not overwrite training metadata.
+        self.save_config()
 
     def save_config(self):
         config_dict = self.config.to_dict()
-        with open(f"{self.group_stat_dir}/analysis_config.json", "w") as f:
+        with open(f"{self.experiment_dir}/config.json", "w") as f:
             json.dump(config_dict, f)
 
     def update_bino_interaction(self, interaction: str) -> None:
@@ -73,135 +74,127 @@ class GA_LearningCurve:
             interaction (str): The new binocular interaction to set.
         """
         # update the binocular interaction in the config
-        previous = self.config.binocular_interaction
         self.config.binocular_interaction = interaction
 
         # update the experiment and plot directories based on the new interaction
-        self.experiment_dir = (
-            f"run/{self.config.dataset}/bino_interaction_{interaction}"
-        )
+        self.experiment_dir = f"{self.model_name}/run/{self.config.dataset}/bino_interaction_{interaction}"
         self.plot_dir = f"{self.experiment_dir}/plots"
         if not os.path.exists(self.plot_dir):
             os.makedirs(self.plot_dir)
 
         # save config
-        # Analysis must not overwrite training metadata.
+        self.save_config()
 
         print(
             "Update binocular interaction from "
-            + f"{previous} to {interaction}.\n"
+            + f"{self.config.binocular_interaction} to {interaction}.\n"
             + f"Experiment directory: {self.experiment_dir}\n"
             + f"Plot directory: {self.plot_dir}"
         )
 
-    def _load_metric(self, name):
-        rows, schedules = [], []
+    def get_train_loss(self) -> Float[np.ndarray, "n_seed n_step"]:
+        """
+        gather training losses over all seeds for a given binocular interaction.
+
+        Returns:
+            losses<np.ndarray [n_seed, n_step]> : train losses for each seed
+        """
+
+        losses = []
         for seed in self.config.seed_to_analyse:
-            root = Path(self.experiment_dir)
-            candidates = []
-            for folder in [root / str(seed), *sorted(root.glob("experiment_*"))]:
-                if not (folder / f"{name}.npy").exists():
-                    continue
-                metadata = folder / "config.json"
-                if not metadata.exists():
-                    raise ValueError(f"Missing run metadata: {metadata}")
-                cfg = json.loads(metadata.read_text())
-                if (
-                    cfg.get("seed") == seed
-                    and cfg.get("binocular_interaction")
-                    == self.config.binocular_interaction
-                    and cfg.get("dataset") == self.config.dataset
-                ):
-                    candidates.append((folder, cfg))
-            if len(candidates) != 1:
-                raise ValueError(
-                    f"Expected one matching run for seed {seed}, found {len(candidates)} in {root}"
-                )
-            folder, cfg = candidates[0]
-            values = np.load(folder / f"{name}.npy")
-            if values.ndim != 1 or not values.size or not np.isfinite(values).all():
-                raise ValueError(f"Invalid metric array: {folder}/{name}.npy")
-            steps_path = folder / "eval_steps.npy"
-            steps = (
-                np.load(steps_path)
-                if steps_path.exists()
-                else np.arange(len(values)) * cfg["eval_interval"]
-            )
-            if (
-                steps.shape != values.shape
-                or not np.isfinite(steps).all()
-                or np.any(np.diff(steps) <= 0)
-            ):
-                raise ValueError(f"Invalid evaluation steps in {folder}")
-            rows.append(values)
-            schedules.append(steps)
-        if not rows or any(not np.array_equal(schedules[0], x) for x in schedules[1:]):
-            raise ValueError("Seeds must have matching evaluation schedules")
-        if hasattr(self, "eval_steps") and not np.array_equal(
-            self.eval_steps, schedules[0]
-        ):
-            raise ValueError(
-                "Interactions/metrics must have matching evaluation schedules"
-            )
-        self.eval_steps = schedules[0]
-        return np.stack(rows)
 
-    def get_train_loss(self):
-        return self._load_metric("losses_train")
+            # load training loss
+            loss = np.load(f"{self.experiment_dir}/experiment_{seed}/losses_train.npy")
+            losses.append(loss)
 
-    def get_train_acc(self):
-        return self._load_metric("accs_train")
+        # list to array
+        losses = np.array(losses)
 
-    def get_val_loss(self):
-        return self._load_metric("losses_val")
+        return losses
 
-    def get_val_acc(self):
-        return self._load_metric("accs_val")
+    def get_train_acc(self) -> Float[np.ndarray, "n_seed n_step"]:
+        """
+        gather training accuracies over all seeds for a given binocular interaction.
 
-    def _steps(self, values):
-        steps = getattr(self, "eval_steps", None)
-        if steps is None:
-            return np.arange(len(values)) * self.config.eval_interval
-        if len(steps) != len(values):
-            raise ValueError("Plot values do not match evaluation steps")
-        return steps
+        Returns:
+            accs<np.ndarray [n_seed, n_step]> : train accuracies
+                for each seed
+        """
+
+        accs = []
+        for seed in self.config.seed_to_analyse:
+
+            # load training accuracy
+            loss = np.load(f"{self.experiment_dir}/experiment_{seed}/accs_train.npy")
+            accs.append(loss)
+
+        # list to array
+        accs = np.array(accs)
+
+        return accs
+
+    def get_val_loss(self) -> Float[np.ndarray, "n_seed n_step"]:
+        """
+        gather validation losses over all seeds for a given binocular interaction.
+
+        Returns:
+            losses<np.ndarray [n_seed, n_step]> : validation losses
+                for each seed
+        """
+
+        losses = []
+        for seed in self.config.seed_to_analyse:
+
+            # load validation loss
+            loss = np.load(f"{self.experiment_dir}/experiment_{seed}/losses_val.npy")
+            losses.append(loss)
+
+        # list to array
+        losses = np.array(losses)
+
+        return losses
+
+    def get_val_acc(self) -> Float[np.ndarray, "n_seed n_step"]:
+        """
+        gather validation accuracies over all seeds for a given binocular interaction.
+
+        Returns:
+            accs<np.ndarray [n_seed, n_step]> : validation accuracies
+                for each seed
+        """
+
+        accs = []
+        for seed in self.config.seed_to_analyse:
+
+            # load validation accuracy
+            loss = np.load(f"{self.experiment_dir}/experiment_{seed}/accs_val.npy")
+            accs.append(loss)
+
+        # list to array
+        accs = np.array(accs)
+
+        return accs
 
     def _compute_statistics(
         self, data: Float[np.ndarray, "len_interactions n_seed"], data_name: str
     ):
 
         # overall non-parametric repeated-measured test
-        if (
-            data.ndim != 2
-            or data.shape[0] != len(self.interactions)
-            or data.shape[1] < 2
-            or not np.isfinite(data).all()
-        ):
-            raise ValueError(
-                "Statistics require finite interaction-by-seed data with at least two seeds"
-            )
-        if len(self.interactions) < 3:
-            raise ValueError("Friedman test requires at least three interactions")
-        if np.all(data == data[0]):
-            friedman = (0.0, 1.0)
-        else:
-            friedman = stats.friedmanchisquare(*data)
-        pd.DataFrame([{"statistic": friedman[0], "p_value": friedman[1]}]).to_csv(
-            f"{self.group_stat_dir}/friedman_{data_name}.csv", index=False
+        friedman = stats.friedmanchisquare(
+            data[0, :],
+            data[1, :],
+            data[2, :],
+            data[3, :],
         )
 
         print(f"Friedman test: {friedman}")
 
         # post-hoc pairwise Wilcoxon tests
-        pairs = list(combinations(range(len(self.interactions)), 2))
+        pairs = list(combinations(range(4), 2))
         p_vals = []
         rows = []
         for i, j in pairs:
-            stat, p = (
-                (0.0, 1.0)
-                if np.array_equal(data[i], data[j])
-                else stats.wilcoxon(data[i], data[j])
-            )
+            stat, p = stats.wilcoxon(data[i], data[j])
             p_vals.append(p)
 
             rows.append(
@@ -238,16 +231,16 @@ class GA_LearningCurve:
     def compute_statistics_all(self):
 
         train_loss_all_interactions = np.empty(
-            (len(self.interactions), len(self.config.seed_to_analyse)), dtype=np.float64
+            (len(self.interactions), len(self.config.seed_to_analyse)), dtype=np.float32
         )
         train_acc_all_interactions = np.empty(
-            (len(self.interactions), len(self.config.seed_to_analyse)), dtype=np.float64
+            (len(self.interactions), len(self.config.seed_to_analyse)), dtype=np.float32
         )
         val_loss_all_interactions = np.empty(
-            (len(self.interactions), len(self.config.seed_to_analyse)), dtype=np.float64
+            (len(self.interactions), len(self.config.seed_to_analyse)), dtype=np.float32
         )
         val_acc_all_interactions = np.empty(
-            (len(self.interactions), len(self.config.seed_to_analyse)), dtype=np.float64
+            (len(self.interactions), len(self.config.seed_to_analyse)), dtype=np.float32
         )
 
         for i, interaction in enumerate(self.interactions):
@@ -339,43 +332,43 @@ class GA_LearningCurve:
         plt.subplots_adjust(wspace=0.2, hspace=0.3)
 
         colors = ["#333333", "#00CED1"]
-        axes.plot(
-            self._steps(train_loss_avg),
-            train_loss_avg,
-            linewidth=2,
-            color=colors[0],
-            label="Train",
-        )
+        axes.plot(train_loss_avg, linewidth=2, color=colors[0], label="Train")
         axes.fill_between(
-            self._steps(train_loss_avg),
+            np.arange(len(train_loss_avg)),
             train_loss_avg - train_loss_std,
             train_loss_avg + train_loss_std,
             color=colors[0],
             alpha=0.2,
         )
-        axes.plot(
-            self._steps(val_loss_avg),
-            val_loss_avg,
-            linewidth=2,
-            color=colors[1],
-            label="Val",
-        )
+        axes.plot(val_loss_avg, linewidth=2, color=colors[1], label="Val")
         axes.fill_between(
-            self._steps(val_loss_avg),
+            np.arange(len(val_loss_avg)),
             val_loss_avg - val_loss_std,
             val_loss_avg + val_loss_std,
             color=colors[1],
             alpha=0.2,
         )
 
-        axes.set_xlabel("Optimizer updates")
-        axes.set_ylabel(self.config.loss)
+        x_low = 0
+        x_up = 41
+        x_step = 5
+        if self.model_name == "BNN":
+            y_low = 10
+            y_up = 71
+            y_step = 10
+        elif self.model_name == "GC_Net":
+            y_low = 0
+            y_up = 31
+            y_step = 5
 
-        axes.autoscale(enable=True, axis="x")
-        if "accuracy" in axes.get_ylabel():
-            axes.set_ylim(0, 1)
-        else:
-            axes.autoscale(enable=True, axis="y")
+        axes.set_xlabel("Steps (x 500)")
+        axes.set_ylabel("L1-loss")
+        axes.set_xticks(np.round(np.arange(x_low, x_up, x_step), 2))
+        axes.set_xticklabels(np.round(np.arange(x_low, x_up, x_step), 2))
+        axes.set_yticks(np.round(np.arange(y_low, y_up, y_step), 2))
+        axes.set_yticklabels(np.round(np.arange(y_low, y_up, y_step), 2))
+        axes.set_xlim(x_low, x_up)
+        axes.set_ylim(y_low, y_up)
 
         plt.legend(
             loc="upper right",
@@ -397,7 +390,6 @@ class GA_LearningCurve:
                 dpi=600,
                 bbox_inches="tight",
             )
-            plt.close(fig)
 
     def plotLine_train_loss_all_interactions(
         self,
@@ -462,45 +454,27 @@ class GA_LearningCurve:
         colors = ["#333333", "#6a5acd", "#B22222", "#00CED1"]
         labels = ["Concat", "BEM", "CMM", "Sum Diff"]
 
-        axes.plot(
-            self._steps(train_loss_default_avg),
-            train_loss_default_avg,
-            linewidth=2,
-            color=colors[0],
-            label=labels[0],
-        )
+        axes.plot(train_loss_default_avg, linewidth=2, color=colors[0], label=labels[0])
         axes.fill_between(
-            self._steps(train_loss_default_avg),
+            np.arange(len(train_loss_default_avg)),
             train_loss_default_avg - train_loss_default_std,
             train_loss_default_avg + train_loss_default_std,
             color=colors[0],
             alpha=0.2,
         )
 
-        axes.plot(
-            self._steps(train_loss_bem_avg),
-            train_loss_bem_avg,
-            linewidth=2,
-            color=colors[1],
-            label=labels[1],
-        )
+        axes.plot(train_loss_bem_avg, linewidth=2, color=colors[1], label=labels[1])
         axes.fill_between(
-            self._steps(train_loss_bem_avg),
+            np.arange(len(train_loss_bem_avg)),
             train_loss_bem_avg - train_loss_bem_std,
             train_loss_bem_avg + train_loss_bem_std,
             color=colors[1],
             alpha=0.2,
         )
 
-        axes.plot(
-            self._steps(train_loss_cmm_avg),
-            train_loss_cmm_avg,
-            linewidth=2,
-            color=colors[2],
-            label=labels[2],
-        )
+        axes.plot(train_loss_cmm_avg, linewidth=2, color=colors[2], label=labels[2])
         axes.fill_between(
-            self._steps(train_loss_cmm_avg),
+            np.arange(len(train_loss_cmm_avg)),
             train_loss_cmm_avg - train_loss_cmm_std,
             train_loss_cmm_avg + train_loss_cmm_std,
             color=colors[2],
@@ -508,28 +482,36 @@ class GA_LearningCurve:
         )
 
         axes.plot(
-            self._steps(train_loss_sum_diff_avg),
-            train_loss_sum_diff_avg,
-            linewidth=2,
-            color=colors[3],
-            label=labels[3],
+            train_loss_sum_diff_avg, linewidth=2, color=colors[3], label=labels[3]
         )
         axes.fill_between(
-            self._steps(train_loss_sum_diff_avg),
+            np.arange(len(train_loss_sum_diff_avg)),
             train_loss_sum_diff_avg - train_loss_sum_diff_std,
             train_loss_sum_diff_avg + train_loss_sum_diff_std,
             color=colors[3],
             alpha=0.2,
         )
 
-        axes.set_xlabel("Optimizer updates")
-        axes.set_ylabel(self.config.loss)
+        x_low = 0
+        x_up = 41
+        x_step = 5
+        if self.model_name == "BNN":
+            y_low = 10
+            y_up = 61
+            y_step = 10
+        elif self.model_name == "GC_Net":
+            y_low = 0
+            y_up = 31
+            y_step = 5
 
-        axes.autoscale(enable=True, axis="x")
-        if "accuracy" in axes.get_ylabel():
-            axes.set_ylim(0, 1)
-        else:
-            axes.autoscale(enable=True, axis="y")
+        axes.set_xlabel("Steps (x 500)")
+        axes.set_ylabel("L1-loss")
+        axes.set_xticks(np.round(np.arange(x_low, x_up, x_step), 2))
+        axes.set_xticklabels(np.round(np.arange(x_low, x_up, x_step), 2))
+        axes.set_yticks(np.round(np.arange(y_low, y_up, y_step), 2))
+        axes.set_yticklabels(np.round(np.arange(y_low, y_up, y_step), 2))
+        axes.set_xlim(x_low, x_up)
+        axes.set_ylim(y_low, y_up)
 
         plt.legend(
             loc="upper right",
@@ -551,7 +533,6 @@ class GA_LearningCurve:
                 dpi=600,
                 bbox_inches="tight",
             )
-            plt.close(fig)
 
     def plotLine_val_loss_all_interactions(
         self,
@@ -608,74 +589,62 @@ class GA_LearningCurve:
         colors = ["#333333", "#6a5acd", "#B22222", "#00CED1"]
         labels = ["Concat", "BEM", "CMM", "Sum Diff"]
 
-        axes.plot(
-            self._steps(val_loss_default_avg),
-            val_loss_default_avg,
-            linewidth=2,
-            color=colors[0],
-            label=labels[0],
-        )
+        axes.plot(val_loss_default_avg, linewidth=2, color=colors[0], label=labels[0])
         axes.fill_between(
-            self._steps(val_loss_default_avg),
+            np.arange(len(val_loss_default_avg)),
             val_loss_default_avg - val_loss_default_std,
             val_loss_default_avg + val_loss_default_std,
             color=colors[0],
             alpha=0.2,
         )
 
-        axes.plot(
-            self._steps(val_loss_bem_avg),
-            val_loss_bem_avg,
-            linewidth=2,
-            color=colors[1],
-            label=labels[1],
-        )
+        axes.plot(val_loss_bem_avg, linewidth=2, color=colors[1], label=labels[1])
         axes.fill_between(
-            self._steps(val_loss_bem_avg),
+            np.arange(len(val_loss_bem_avg)),
             val_loss_bem_avg - val_loss_bem_std,
             val_loss_bem_avg + val_loss_bem_std,
             color=colors[1],
             alpha=0.2,
         )
 
-        axes.plot(
-            self._steps(val_loss_cmm_avg),
-            val_loss_cmm_avg,
-            linewidth=2,
-            color=colors[2],
-            label=labels[2],
-        )
+        axes.plot(val_loss_cmm_avg, linewidth=2, color=colors[2], label=labels[2])
         axes.fill_between(
-            self._steps(val_loss_cmm_avg),
+            np.arange(len(val_loss_cmm_avg)),
             val_loss_cmm_avg - val_loss_cmm_std,
             val_loss_cmm_avg + val_loss_cmm_std,
             color=colors[2],
             alpha=0.2,
         )
 
-        axes.plot(
-            self._steps(val_loss_sum_diff_avg),
-            val_loss_sum_diff_avg,
-            linewidth=2,
-            color=colors[3],
-            label=labels[3],
-        )
+        axes.plot(val_loss_sum_diff_avg, linewidth=2, color=colors[3], label=labels[3])
         axes.fill_between(
-            self._steps(val_loss_sum_diff_avg),
+            np.arange(len(val_loss_sum_diff_avg)),
             val_loss_sum_diff_avg - val_loss_sum_diff_std,
             val_loss_sum_diff_avg + val_loss_sum_diff_std,
             color=colors[3],
             alpha=0.2,
         )
 
-        axes.set_xlabel("Optimizer updates")
-        axes.set_ylabel(self.config.loss)
+        x_low = 0
+        x_up = 41
+        x_step = 5
+        if self.model_name == "BNN":
+            y_low = 10
+            y_up = 61
+            y_step = 10
+        elif self.model_name == "GC_Net":
+            y_low = 0
+            y_up = 31
+            y_step = 5
 
-        axes.autoscale(enable=True, axis="x")
-        if "accuracy" in axes.get_ylabel():
-            axes.set_ylim(0, 1)
-        else:
-            axes.autoscale(enable=True, axis="y")
+        axes.set_xlabel("Steps (x 500)")
+        axes.set_ylabel("L1-loss")
+        axes.set_xticks(np.round(np.arange(x_low, x_up, x_step), 2))
+        axes.set_xticklabels(np.round(np.arange(x_low, x_up, x_step), 2))
+        axes.set_yticks(np.round(np.arange(y_low, y_up, y_step), 2))
+        axes.set_yticklabels(np.round(np.arange(y_low, y_up, y_step), 2))
+        axes.set_xlim(x_low, x_up)
+        axes.set_ylim(y_low, y_up)
 
         plt.legend(
             loc="upper right",
@@ -697,9 +666,8 @@ class GA_LearningCurve:
                 dpi=600,
                 bbox_inches="tight",
             )
-            plt.close(fig)
 
-    def plotLine_acc_all_seeds(
+    def plotLine_acc(
         self,
         train_accs: Float[np.ndarray, "n_seed n_step"],
         val_accs: Float[np.ndarray, "n_seed n_step"],
@@ -745,43 +713,43 @@ class GA_LearningCurve:
         plt.subplots_adjust(wspace=0.2, hspace=0.3)
 
         colors = ["#333333", "#00CED1"]
-        axes.plot(
-            self._steps(train_acc_avg),
-            train_acc_avg,
-            linewidth=2,
-            color=colors[0],
-            label="Train",
-        )
+        axes.plot(train_acc_avg, linewidth=2, color=colors[0], label="Train")
         axes.fill_between(
-            self._steps(train_acc_avg),
+            np.arange(len(train_acc_avg)),
             train_acc_avg - train_acc_std,
             train_acc_avg + train_acc_std,
             color=colors[0],
             alpha=0.2,
         )
-        axes.plot(
-            self._steps(val_acc_avg),
-            val_acc_avg,
-            linewidth=2,
-            color=colors[1],
-            label="Val",
-        )
+        axes.plot(val_acc_avg, linewidth=2, color=colors[1], label="Val")
         axes.fill_between(
-            self._steps(val_acc_avg),
+            np.arange(len(val_acc_avg)),
             val_acc_avg - val_acc_std,
             val_acc_avg + val_acc_std,
             color=colors[1],
             alpha=0.2,
         )
 
-        axes.set_xlabel("Optimizer updates")
-        axes.set_ylabel("3-pix accuracy")
+        x_low = 0
+        x_up = 41
+        x_step = 5
+        if self.model_name == "BNN":
+            y_low = 0.0
+            y_up = 0.71
+            y_step = 0.1
+        elif self.model_name == "GC_Net":
+            y_low = 0.0
+            y_up = 1.01
+            y_step = 0.2
 
-        axes.autoscale(enable=True, axis="x")
-        if "accuracy" in axes.get_ylabel():
-            axes.set_ylim(0, 1)
-        else:
-            axes.autoscale(enable=True, axis="y")
+        axes.set_xlabel("Steps (x 500)")
+        axes.set_ylabel("3-pix accuracy")
+        axes.set_xticks(np.round(np.arange(x_low, x_up, x_step), 2))
+        axes.set_xticklabels(np.round(np.arange(x_low, x_up, x_step), 2))
+        axes.set_yticks(np.round(np.arange(y_low, y_up, y_step), 2))
+        axes.set_yticklabels(np.round(np.arange(y_low, y_up, y_step), 2))
+        axes.set_xlim(x_low, x_up)
+        axes.set_ylim(y_low, y_up)
 
         plt.legend(
             loc="lower right",
@@ -803,7 +771,6 @@ class GA_LearningCurve:
                 dpi=600,
                 bbox_inches="tight",
             )
-            plt.close(fig)
 
     def plotLine_train_acc_all_interactions(
         self,
@@ -860,74 +827,62 @@ class GA_LearningCurve:
         colors = ["#333333", "#6a5acd", "#B22222", "#00CED1"]
         labels = ["Concat", "BEM", "CMM", "Sum Diff"]
 
-        axes.plot(
-            self._steps(train_acc_default_avg),
-            train_acc_default_avg,
-            linewidth=2,
-            color=colors[0],
-            label=labels[0],
-        )
+        axes.plot(train_acc_default_avg, linewidth=2, color=colors[0], label=labels[0])
         axes.fill_between(
-            self._steps(train_acc_default_avg),
+            np.arange(len(train_acc_default_avg)),
             train_acc_default_avg - train_acc_default_std,
             train_acc_default_avg + train_acc_default_std,
             color=colors[0],
             alpha=0.2,
         )
 
-        axes.plot(
-            self._steps(train_acc_bem_avg),
-            train_acc_bem_avg,
-            linewidth=2,
-            color=colors[1],
-            label=labels[1],
-        )
+        axes.plot(train_acc_bem_avg, linewidth=2, color=colors[1], label=labels[1])
         axes.fill_between(
-            self._steps(train_acc_bem_avg),
+            np.arange(len(train_acc_bem_avg)),
             train_acc_bem_avg - train_acc_bem_std,
             train_acc_bem_avg + train_acc_bem_std,
             color=colors[1],
             alpha=0.2,
         )
 
-        axes.plot(
-            self._steps(train_acc_cmm_avg),
-            train_acc_cmm_avg,
-            linewidth=2,
-            color=colors[2],
-            label=labels[2],
-        )
+        axes.plot(train_acc_cmm_avg, linewidth=2, color=colors[2], label=labels[2])
         axes.fill_between(
-            self._steps(train_acc_cmm_avg),
+            np.arange(len(train_acc_cmm_avg)),
             train_acc_cmm_avg - train_acc_cmm_std,
             train_acc_cmm_avg + train_acc_cmm_std,
             color=colors[2],
             alpha=0.2,
         )
 
-        axes.plot(
-            self._steps(train_acc_sum_diff_avg),
-            train_acc_sum_diff_avg,
-            linewidth=2,
-            color=colors[3],
-            label=labels[3],
-        )
+        axes.plot(train_acc_sum_diff_avg, linewidth=2, color=colors[3], label=labels[3])
         axes.fill_between(
-            self._steps(train_acc_sum_diff_avg),
+            np.arange(len(train_acc_sum_diff_avg)),
             train_acc_sum_diff_avg - train_acc_sum_diff_std,
             train_acc_sum_diff_avg + train_acc_sum_diff_std,
             color=colors[3],
             alpha=0.2,
         )
 
-        axes.set_xlabel("Optimizer updates")
-        axes.set_ylabel("3-pix accuracy")
+        x_low = 0
+        x_up = 41
+        x_step = 5
+        if self.model_name == "BNN":
+            y_low = 0.0
+            y_up = 0.71
+            y_step = 0.1
+        elif self.model_name == "GC_Net":
+            y_low = 0.0
+            y_up = 1.01
+            y_step = 0.2
 
-        axes.autoscale(enable=True, axis="x")
-        if "accuracy" in axes.get_ylabel():
-            axes.set_ylim(0, 1)
-        else:
-            axes.autoscale(enable=True, axis="y")
+        axes.set_xlabel("Steps (x 500)")
+        axes.set_ylabel("3-pix accuracy")
+        axes.set_xticks(np.round(np.arange(x_low, x_up, x_step), 2))
+        axes.set_xticklabels(np.round(np.arange(x_low, x_up, x_step), 2))
+        axes.set_yticks(np.round(np.arange(y_low, y_up, y_step), 2))
+        axes.set_yticklabels(np.round(np.arange(y_low, y_up, y_step), 2))
+        axes.set_xlim(x_low, x_up)
+        axes.set_ylim(y_low, y_up)
 
         plt.legend(
             loc="lower right",
@@ -949,7 +904,6 @@ class GA_LearningCurve:
                 dpi=600,
                 bbox_inches="tight",
             )
-            plt.close(fig)
 
     def plotLine_val_acc_all_interactions(
         self,
@@ -1006,74 +960,62 @@ class GA_LearningCurve:
         colors = ["#333333", "#6a5acd", "#B22222", "#00CED1"]
         labels = ["Concat", "BEM", "CMM", "Sum Diff"]
 
-        axes.plot(
-            self._steps(val_acc_default_avg),
-            val_acc_default_avg,
-            linewidth=2,
-            color=colors[0],
-            label=labels[0],
-        )
+        axes.plot(val_acc_default_avg, linewidth=2, color=colors[0], label=labels[0])
         axes.fill_between(
-            self._steps(val_acc_default_avg),
+            np.arange(len(val_acc_default_avg)),
             val_acc_default_avg - val_acc_default_std,
             val_acc_default_avg + val_acc_default_std,
             color=colors[0],
             alpha=0.2,
         )
 
-        axes.plot(
-            self._steps(val_acc_bem_avg),
-            val_acc_bem_avg,
-            linewidth=2,
-            color=colors[1],
-            label=labels[1],
-        )
+        axes.plot(val_acc_bem_avg, linewidth=2, color=colors[1], label=labels[1])
         axes.fill_between(
-            self._steps(val_acc_bem_avg),
+            np.arange(len(val_acc_bem_avg)),
             val_acc_bem_avg - val_acc_bem_std,
             val_acc_bem_avg + val_acc_bem_std,
             color=colors[1],
             alpha=0.2,
         )
 
-        axes.plot(
-            self._steps(val_acc_cmm_avg),
-            val_acc_cmm_avg,
-            linewidth=2,
-            color=colors[2],
-            label=labels[2],
-        )
+        axes.plot(val_acc_cmm_avg, linewidth=2, color=colors[2], label=labels[2])
         axes.fill_between(
-            self._steps(val_acc_cmm_avg),
+            np.arange(len(val_acc_cmm_avg)),
             val_acc_cmm_avg - val_acc_cmm_std,
             val_acc_cmm_avg + val_acc_cmm_std,
             color=colors[2],
             alpha=0.2,
         )
 
-        axes.plot(
-            self._steps(val_acc_sum_diff_avg),
-            val_acc_sum_diff_avg,
-            linewidth=2,
-            color=colors[3],
-            label=labels[3],
-        )
+        axes.plot(val_acc_sum_diff_avg, linewidth=2, color=colors[3], label=labels[3])
         axes.fill_between(
-            self._steps(val_acc_sum_diff_avg),
+            np.arange(len(val_acc_sum_diff_avg)),
             val_acc_sum_diff_avg - val_acc_sum_diff_std,
             val_acc_sum_diff_avg + val_acc_sum_diff_std,
             color=colors[3],
             alpha=0.2,
         )
 
-        axes.set_xlabel("Optimizer updates")
-        axes.set_ylabel("3-pix accuracy")
+        x_low = 0
+        x_up = 41
+        x_step = 5
+        if self.model_name == "BNN":
+            y_low = 0.0
+            y_up = 0.71
+            y_step = 0.1
+        elif self.model_name == "GC_Net":
+            y_low = 0.0
+            y_up = 1.01
+            y_step = 0.2
 
-        axes.autoscale(enable=True, axis="x")
-        if "accuracy" in axes.get_ylabel():
-            axes.set_ylim(0, 1)
-        else:
-            axes.autoscale(enable=True, axis="y")
+        axes.set_xlabel("Steps (x 500)")
+        axes.set_ylabel("3-pix accuracy")
+        axes.set_xticks(np.round(np.arange(x_low, x_up, x_step), 2))
+        axes.set_xticklabels(np.round(np.arange(x_low, x_up, x_step), 2))
+        axes.set_yticks(np.round(np.arange(y_low, y_up, y_step), 2))
+        axes.set_yticklabels(np.round(np.arange(y_low, y_up, y_step), 2))
+        axes.set_xlim(x_low, x_up)
+        axes.set_ylim(y_low, y_up)
 
         plt.legend(
             loc="lower right",
@@ -1095,4 +1037,3 @@ class GA_LearningCurve:
                 dpi=600,
                 bbox_inches="tight",
             )
-            plt.close(fig)

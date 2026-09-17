@@ -3,9 +3,9 @@ import torch
 from torch import Tensor
 from torch import nn
 
-from modules.gcnet import build_gcnet
+from GC_Net.modules.gcnet import build_gcnet
 
-from config.config import ConfigGCNet
+from config.config_gcnet import ConfigGCNet
 import os
 
 
@@ -52,9 +52,9 @@ class GA:
 
         # set up experiment directory
         self.experiment_dir = (
-            f"run/{self.dataset}/"
+            f"{self.model_name}/run/{self.dataset}/"
             + f"bino_interaction_{self.binocular_interaction}/"
-            + f"{self.seed}"
+            + f"experiment_{self.seed}"
         )
 
         # create folder for saving plots of a given interaction
@@ -209,9 +209,9 @@ class GA:
 
         # update the experiment directories based on the new interaction
         self.experiment_dir = (
-            f"run/{self.dataset}/"
+            f"{self.model_name}/run/{self.dataset}/"
             + f"bino_interaction_{self.binocular_interaction}/"
-            + f"{self.seed}"
+            + f"experiment_{self.seed}"
         )
 
         # update directory for storing plots of a given interaction

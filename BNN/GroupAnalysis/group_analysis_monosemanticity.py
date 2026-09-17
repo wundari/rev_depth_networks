@@ -17,7 +17,7 @@ from scipy.stats import sem
 from GroupAnalysis.group_analysis import GA
 
 # from modules.bnn import build_bnn
-from config.config import ConfigBNN
+from config.config_bnn import ConfigBNN
 from RDS.DataHandler_RDS import RDS_Handler, DatasetRDS
 from utilities.misc import NestedTensor
 

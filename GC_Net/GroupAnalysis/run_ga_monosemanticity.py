@@ -1,6 +1,6 @@
 # %% load necessary modules
-from config.config import ConfigGCNet
-from GroupAnalysis.group_analysis_monosemanticity import GA_Monosemanticity
+from config.config_gcnet import ConfigGCNet
+from GC_Net.GroupAnalysis.group_analysis_monosemanticity import GA_Monosemanticity
 
 import numpy as np
 
@@ -15,7 +15,7 @@ params_rds = {
     "dotMatch_list": [0.0, 0.5, 1.0],  # dot match
     "background_flag": 1,  # 1: with cRDS background
     "pedestal_flag": 0,  # 1: use pedestal to ensure rds disparity > 0
-    "batch_size_rds": 4,
+    "batch_size_rds": 8,
 }
 
 ga_mono = GA_Monosemanticity(config, params_rds)
