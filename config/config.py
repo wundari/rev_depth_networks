@@ -99,7 +99,7 @@ class Config:
 
     # rds parameters
     target_disp: int = 10  # RDS target disparity (pix) to be analyzed
-    n_rds_each_disp: int = 256  # n_rds for each disparity magnitude in disp_ct_pix
+    n_rds_each_disp: int = 512  # n_rds for each disparity magnitude in disp_ct_pix
     dotDens_list: list[float] = field(
         default_factory=lambda: np.round(0.1 * np.arange(1, 10), 2).tolist()
     )  # dot densities for in-silico analysis
@@ -112,4 +112,7 @@ class Config:
     background_flag: bool = True  # 1: with cRDS background
     pedestal_flag: bool = False  # 1: use pedestal to ensure rds disparity > 0
     batch_size_rds: int = 16
+    assert (
+        n_rds_each_disp % batch_size_rds == 0
+    ), "n_rds_each_disp must be divisible by batch_size_rds"
     n_bootstrap: int = 1000  # number of bootstrap samples for cross-decoding analysis

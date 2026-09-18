@@ -6,16 +6,21 @@
 # %%
 def main():
     from config.config_gcnet import ConfigGCNet
-    from RDS_analysis.rds_analysis import RDSAnalysis
+    from RDS_analysis.rds_analysis_v2 import RDSAnalysis
 
     # set up GCNet model and RDS analysis
     config = ConfigGCNet()
     rdsa = RDSAnalysis(config)
 
-    # compute model responses to RDSs
-    rdsa.compute_disp_map_rds_group(
-        rdsa.dotDens_list, rdsa.background_flag, rdsa.pedestal_flag
+    # generate RDS dataloader
+    rds_bank = rdsa.create_rds_bank(
+        rdsa.background_flag,
+        rdsa.pedestal_flag,
     )
+
+    # compute model responses to RDSs
+    rdsa.compute_disp_map_rds_group(rds_bank)
+
     # cross-decoding analysis with SVM
     rdsa.xDecode(rdsa.dotDens_list, rdsa.n_bootstrap, rdsa.background_flag)
 

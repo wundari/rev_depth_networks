@@ -10,16 +10,17 @@ def main():
 
     # generate RDS dataloader
     rds_bank = ga_rds.create_rds_bank(
-        ga_rds.dotMatch_list,
-        ga_rds.dotDens_list,
         ga_rds.background_flag,
         ga_rds.pedestal_flag,
     )
 
     # compute disparity map
-    # interactions = ga_rds.config.interactions
-    interactions = ["cmm", "sum_diff", "bem"]
+    interactions = ga_rds.config.interactions
     for interaction in interactions:
+        if interaction == "bem":
+            ga_rds.batch_size_rds = (
+                8  # reduce batch size for bem as it consumes more GPU
+            )
         ga_rds.compute_disp_map_all_seeds(
             rds_bank, interaction, ga_rds.config.n_bootstrap
         )

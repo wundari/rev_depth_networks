@@ -7,13 +7,15 @@ import numpy as np
 import os
 import glob
 import gc
+import io
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+from contextlib import redirect_stdout
 from pathlib import Path
 from tqdm import tqdm
 from scipy.stats import sem
-from joblib import Parallel, parallel_config
+from joblib import Parallel, delayed, parallel_config
 
 from engine.engine_base import EngineBase
 from RDS.DataHandler_RDS import RDS_Handler, DatasetRDS
@@ -41,9 +43,13 @@ class NormalizeRDS:
     _std = torch.tensor([0.229, 0.224, 0.225])[:, None, None]
 
     def __call__(self, image):
-        x = torch.as_tensor(np.ascontiguousarray(image), dtype=torch.float32).permute(
-            2, 0, 1
-        )
+        x = torch.as_tensor(np.ascontiguousarray(image), dtype=torch.float32)
+        if x.ndim == 2:
+            x = x.unsqueeze(0).expand(3, -1, -1)
+        elif x.ndim == 3 and x.shape[-1] == 3:
+            x = x.permute(2, 0, 1)
+        else:
+            raise ValueError(f"Expected an HW or HWC RGB image, got {tuple(x.shape)}")
         if not torch.isfinite(x).all() or x.min() < -1 or x.max() > 1:
             raise ValueError("RDS pixels must be finite in [-1, 1]")
 
@@ -51,26 +57,54 @@ class NormalizeRDS:
 
 
 def _generate_rds_condition(
-    dot_match, dot_density, disparities, n_per_disp, background, pedestal, seed
+    dot_match,
+    dot_density,
+    disparities,
+    stimulus_seeds,
+    background,
+    pedestal,
 ):
-    """CPU-only job; never serialize the analysis object or its GPU model."""
-    # The original RDS generator uses NumPy's global RNG. Restore it so that
-    # serial bank generation does not alter unrelated randomness in the caller.
+    """Generate one condition using one explicit seed per RDS trial."""
     random_state = np.random.get_state()
     try:
-        np.random.seed(seed)
-        # RDS.create_rds*_batch uses Parallel(n_jobs=-1) internally. A sequential
-        # backend keeps those calls serial without changing the original files
-        # or passing an unsupported n_jobs argument to generate_rds.
+        left_trials = []
+        right_trials = []
+        label_trials = []
+
+        # The outer process handles parallelism. Keep generate_rds's nested
+        # joblib call serial and reseed immediately before every RDS trial.
         with parallel_config(backend="sequential"):
-            return RDS_Handler.generate_rds(
-                dot_match,
-                dot_density,
-                disparities,
-                n_per_disp,
-                background,
-                pedestal,
-            )
+            with redirect_stdout(io.StringIO()):
+                for seed in stimulus_seeds:
+                    np.random.seed(int(seed))
+                    left, right, labels = RDS_Handler.generate_rds(
+                        dot_match,
+                        dot_density,
+                        disparities,
+                        1,
+                        background,
+                        pedestal,
+                    )
+                    # The images are monochrome. One int8 channel reduces the
+                    # resident bank size by 12x; NormalizeRDS expands RGB lazily.
+                    left_trials.append(left[..., 0].astype(np.int8, copy=False))
+                    right_trials.append(right[..., 0].astype(np.int8, copy=False))
+                    label_trials.append(labels)
+
+        n_disparities = len(disparities)
+
+        def disparity_major(trials):
+            # [trial, disparity, ...] -> [disparity, trial, ...] -> flat
+            array = np.stack(trials, axis=0)
+            axes = (1, 0, *range(2, array.ndim))
+            array = array.transpose(axes)
+            return array.reshape(n_disparities * len(stimulus_seeds), *array.shape[2:])
+
+        return (
+            disparity_major(left_trials),
+            disparity_major(right_trials),
+            disparity_major(label_trials),
+        )
     finally:
         np.random.set_state(random_state)
 
@@ -78,10 +112,13 @@ def _generate_rds_condition(
 class RDSBankDataset(ConcatDataset):
     """Conditions ordered by match, density, then the handler's disparity order."""
 
-    def __init__(self, datasets, dot_matches, dot_densities, samples_per_condition):
+    def __init__(
+        self, datasets, dot_matches, dot_densities, samples_per_condition, bank_seed
+    ):
         super().__init__(datasets)
         self.dot_matches = tuple(dot_matches)
         self.dot_densities = tuple(dot_densities)
+        self.bank_seed = bank_seed
         self.condition_shape = (
             len(self.dot_matches),
             len(self.dot_densities),
@@ -252,59 +289,99 @@ class RDSAnalysis(EngineBase):
 
     def create_rds_bank(
         self,
-        dotMatch_list: list,
-        dotDens_list: list,
         background_flag: bool,
         pedestal_flag: bool,
+        *,
+        bank_seed: int = 3407,
+        n_jobs: int = 8,
+        loader_workers: int = 4,
     ):
-        """
-        generate disparity map specifically for rds for a given dot Match and dotDens.
+        """Generate a reusable, deterministic RDS bank.
 
         Args:
-            dotMatch_list (float): a list of dot match level [0.0, 0.5, 1.0]
+            dotMatch_list: Dot-match levels, for example [0.0, 0.5, 1.0].
 
-            dotDens_list (float): dot density level; [0.1, ..., 0.9]
+            dotDens_list: Dot-density levels, for example [0.1, ..., 0.9].
 
-            background_flag ([binary 1/0]): a binary flag indicating
-                    whether the RDS is surrounded by cRDS background (1) or not (0)
+            background_flag: Whether to surround the RDS with a cRDS background.
 
-            pedestal_flag (binary): a flag indicating with or without pedestal.
-                pedestal here means that the whole RDSs are shifted such that
-                the smallest disparity = 0.
-                0: without pedestal
-                1: with pedestal
+            pedestal_flag: Whether to shift each RDS so its minimum disparity is 0.
+
+            bank_seed: Root seed used to derive an explicit seed for every trial.
+
+            n_jobs: Number of processes used for condition-level generation.
+
+            loader_workers: DataLoader worker count. Zero avoids copying the
+                multi-gigabyte bank into spawned loader processes.
 
         Returns:
-            rds_bank: DataLoader
+            A sequential DataLoader whose dataset is ordered by dot match, dot
+            density, disparity, then trial.
         """
 
+        dot_matches = tuple(float(value) for value in self.dotMatch_list)
+        dot_densities = tuple(float(value) for value in self.dotDens_list)
+        if not dot_matches or not dot_densities:
+            raise ValueError("dotMatch_list and dotDens_list must be non-empty")
+        if len(set(dot_matches)) != len(dot_matches):
+            raise ValueError("dotMatch_list contains duplicate conditions")
+        if len(set(dot_densities)) != len(dot_densities):
+            raise ValueError("dotDens_list contains duplicate conditions")
+        if self.n_rds_each_disp <= 0:
+            raise ValueError("n_rds_each_disp must be positive")
+        if bank_seed < 0:
+            raise ValueError("bank_seed must be non-negative")
+        if n_jobs == 0:
+            raise ValueError("n_jobs cannot be zero")
+        if loader_workers < 0:
+            raise ValueError("loader_workers must be non-negative")
+
         n_samples = len(self.disp_ct_pix_list) * self.n_rds_each_disp
-        n_rgb_channels = 3
         conditions = [
-            (dotMatch, dotDens)
-            for dotMatch in self.dotMatch_list
-            for dotDens in self.dotDens_list
+            (dotMatch, dotDens) for dotMatch in dot_matches for dotDens in dot_densities
         ]
-        seeds = np.random.SeedSequence(self.config.seed).generate_state(len(conditions))
+
+        # Derive seeds from condition values instead of condition indices. Thus,
+        # reordering or subsetting the requested conditions does not change an
+        # existing stimulus. Each submitted job receives all seeds explicitly.
+        stimulus_seeds = []
+        for dot_match, dot_density in conditions:
+            condition_seed = np.random.SeedSequence(
+                [
+                    bank_seed,
+                    int(round((dot_match + 1.0) * 10_000)),
+                    int(round(dot_density * 10_000)),
+                ]
+            )
+            stimulus_seeds.append(
+                [
+                    int(child.generate_state(1, dtype=np.uint32)[0])
+                    for child in condition_seed.spawn(self.n_rds_each_disp)
+                ]
+            )
+
         datasets = []
         with parallel_config(backend="loky", inner_max_num_threads=1):
-            results = Parallel(n_jobs=2, return_as="generator", pre_dispatch="n_jobs")(
+            results = Parallel(
+                n_jobs=n_jobs, return_as="generator", pre_dispatch="n_jobs"
+            )(
                 delayed(_generate_rds_condition)(
                     dotMatch,
                     dotDens,
                     self.disp_ct_pix_list,
-                    self.n_rds_each_disp,
+                    seeds,
                     background_flag,
                     pedestal_flag,
-                    int(seed),
                 )
-                for (dotMatch, dotDens), seed in zip(conditions, seeds, strict=True)
+                for (dotMatch, dotDens), seeds in zip(
+                    conditions, stimulus_seeds, strict=True
+                )
             )
 
             for rds_left, rds_right, rds_label in tqdm(
                 results, total=len(conditions), desc="Generating RDS bank"
             ):
-                expected_shape = (n_samples, self.h_bg, self.w_bg, n_rgb_channels)
+                expected_shape = (n_samples, self.h_bg, self.w_bg)
                 if (
                     rds_left.shape != expected_shape
                     or rds_right.shape != expected_shape
@@ -323,18 +400,22 @@ class RDSAnalysis(EngineBase):
                     )
                 )
 
-        dataset = RDSBankDataset(datasets, dotMatch_list, dotDens_list, n_samples)
-        rds_bank = DataLoader(
-            dataset,
-            batch_size=self.batch_size_rds,
-            shuffle=False,
-            pin_memory=True,
-            drop_last=False,
-            num_workers=2,
-            prefetch_factor=2,
+        dataset = RDSBankDataset(
+            datasets, dot_matches, dot_densities, n_samples, bank_seed
         )
+        loader_options = {
+            "dataset": dataset,
+            "batch_size": self.batch_size_rds,
+            "shuffle": False,
+            "pin_memory": True,
+            "drop_last": False,
+            "num_workers": loader_workers,
+        }
+        if loader_workers > 0:
+            loader_options["prefetch_factor"] = 2
+            loader_options["persistent_workers"] = True
 
-        return rds_bank
+        return DataLoader(**loader_options)
 
     @torch.inference_mode()
     def compute_disp_map_rds(
@@ -363,9 +444,7 @@ class RDSAnalysis(EngineBase):
                 "The RDS bank must use sequential sampling and drop_last=False"
             )
 
-        n_samples = len(
-            dataset
-        )  # len(self.dotMatch_list) * len(self.dotDens_list) *len(self.disp_ct_pix_list) * self.n_rds_each_disp
+        n_samples = len(dataset)
         pred_disp = torch.empty(
             (
                 n_samples,
@@ -382,12 +461,15 @@ class RDSAnalysis(EngineBase):
         # predict disparity map
         self.model.eval()
         tepoch = tqdm(rds_bank, desc="Predicting RDS")
-        for i, (inputs_left, inputs_right, disps) in enumerate(tepoch):
+        offset = 0
+        for inputs_left, inputs_right, disps in tepoch:
             # for i in range(len(rds_loader)):
             # (inputs_left, inputs_right, disps) = next(iter(rds_loader))
 
             # print(f"disp map RDS dotMatch: {dotMatch:.2f}, dotDens: {dotDens:.2f}")
 
+            # Generate disparity direction. Swap left/right per sample rather
+            # than per batch, so correctness does not depend on batch boundaries.
             # generate disparity direction
             ref = disps / 10.0
 
@@ -416,10 +498,14 @@ class RDSAnalysis(EngineBase):
             with torch.autocast(device_type=self.config.device, dtype=torch.bfloat16):
                 disp_pred = self.model(input_data)
 
-            id_start = i * self.batch_size_rds
-            id_end = id_start + self.batch_size_rds
-            pred_disp_labels[id_start:id_end] = disps.numpy()
-            pred_disp[id_start:id_end].copy_(disp_pred.float().cpu())
+            batch_length = len(disps)
+            id_end = offset + batch_length
+            pred_disp_labels[offset:id_end] = disps.cpu().numpy()
+            pred_disp[offset:id_end].copy_(disp_pred.float().cpu())
+            offset = id_end
+
+        if offset != n_samples:
+            raise RuntimeError(f"Predicted {offset} samples, expected {n_samples}")
 
         return (
             pred_disp.reshape(*dataset.condition_shape, self.h_bg, self.w_bg),
@@ -427,24 +513,17 @@ class RDSAnalysis(EngineBase):
         )
 
     def compute_disp_map_rds_group(self, rds_bank: DataLoader):
-        """
-        generate disparity map for rds for each dot density in dotDens_list
+        """Predict and save disparity maps for every condition in an RDS bank.
 
         Args:
-            dotDens_list ([list]): a list containing dot densities
-            background_flag ([binary 1/0]): a binary flag indicating
-                    whether the RDS is surrounded by cRDS background (1) or not (0)
+            rds_bank: The sequential DataLoader returned by create_rds_bank.
         """
+        dataset = rds_bank.dataset
+        if not isinstance(dataset, RDSBankDataset):
+            raise TypeError("Use the DataLoader returned by create_rds_bank")
 
-        # rds_bank = self.create_rds_bank(
-        #     self.dotMatch_list,
-        #     dotDens_list,
-        #     background_flag,
-        #     pedestal_flag,
-        # )
         pred_disp, pred_disp_labels = self.compute_disp_map_rds(rds_bank)
         for dm in range(len(self.dotMatch_list)):
-
             np.save(
                 f"{self.xDecode_dir}/pred_disp_{self.rds_type[dm]}.npy",
                 pred_disp[dm].numpy(),
@@ -613,6 +692,15 @@ class RDSAnalysis(EngineBase):
                 dpi=600,
                 bbox_inches="tight",
             )
+
+        # Clear the current axes.
+        plt.cla()
+        # Clear the current figure.
+        plt.clf()
+        # Closes all the figure windows.
+        plt.close("all")
+        plt.close(fig)
+        gc.collect()
 
     def plotLine_xDecode(self, save_flag: bool = False):
         """
@@ -894,6 +982,15 @@ class RDSAnalysis(EngineBase):
                 bbox_inches="tight",
             )
 
+        # Clear the current axes.
+        plt.cla()
+        # Clear the current figure.
+        plt.clf()
+        # Closes all the figure windows.
+        plt.close("all")
+        plt.close(fig)
+        gc.collect()
+
     def _plot_disp_row(self, axes_row, dd, dotDens, panels, v_min, v_max, cmap, avg):
         """
         panels: list of (disp_map, labels, title_suffix) for ards/hmrds/crds
@@ -991,6 +1088,15 @@ class RDSAnalysis(EngineBase):
                 bbox_inches="tight",
             )
 
+        # Clear the current axes.
+        plt.cla()
+        # Clear the current figure.
+        plt.clf()
+        # Closes all the figure windows.
+        plt.close("all")
+        plt.close(fig)
+        gc.collect()
+
     def plotHeat_dispMap_avg(self, save_flag):
         """
         plot the heat map of the predicted disparity map, averaged across
@@ -1058,3 +1164,15 @@ class RDSAnalysis(EngineBase):
                 dpi=600,
                 bbox_inches="tight",
             )
+
+        # Clear the current axes.
+        plt.cla()
+        # Clear the current figure.
+        plt.clf()
+        # Closes all the figure windows.
+        plt.close("all")
+        plt.close(fig)
+        gc.collect()
+
+
+# %%

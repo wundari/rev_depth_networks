@@ -6,6 +6,7 @@ working directory: BNN
 
 # %% load necessary modules
 import os
+import gc
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -14,7 +15,7 @@ from torch.utils.data import DataLoader
 
 from config.config_bnn import ConfigBNN
 from config.config_gcnet import ConfigGCNet
-from RDS_analysis.rds_analysis_temp import RDSAnalysis
+from RDS_analysis.rds_analysis_v2 import RDSAnalysis
 
 
 # %%
@@ -287,3 +288,12 @@ class GA_RDS(RDSAnalysis):
                 dpi=600,
                 bbox_inches="tight",
             )
+
+        # Clear the current axes.
+        plt.cla()
+        # Clear the current figure.
+        plt.clf()
+        # Closes all the figure windows.
+        plt.close("all")
+        plt.close(fig)
+        gc.collect()

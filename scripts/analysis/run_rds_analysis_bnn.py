@@ -6,7 +6,7 @@
 # %%
 def main():
     from config.config_bnn import ConfigBNN
-    from RDS_analysis.rds_analysis_temp import RDSAnalysis
+    from RDS_analysis.rds_analysis_v2 import RDSAnalysis
 
     # set up BNN model and RDS analysis
     config = ConfigBNN()
@@ -14,8 +14,6 @@ def main():
 
     # generate RDS dataloader
     rds_bank = rdsa.create_rds_bank(
-        rdsa.dotMatch_list,
-        rdsa.dotDens_list,
         rdsa.background_flag,
         rdsa.pedestal_flag,
     )
