@@ -8,11 +8,21 @@ def main():
     config = ConfigGCNet()
     ga_rds = GA_RDS(config)
 
+    # generate RDS dataloader
+    rds_bank = ga_rds.create_rds_bank(
+        ga_rds.dotMatch_list,
+        ga_rds.dotDens_list,
+        ga_rds.background_flag,
+        ga_rds.pedestal_flag,
+    )
+
     # compute disparity map
     # interactions = ga_rds.config.interactions
-    interactions = ["cmm"]
+    interactions = ["default"]
     for interaction in interactions:
-        ga_rds.compute_disp_map_all_seeds(interaction, ga_rds.config.n_bootstrap)
+        ga_rds.compute_disp_map_all_seeds(
+            rds_bank, interaction, ga_rds.config.n_bootstrap
+        )
 
     # plot depth performance averaged across all seeds
     save_flag = True

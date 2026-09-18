@@ -1,28 +1,25 @@
 # %%
-# script for in-silico analysis using RDS for BNN
+# script for in-silico analysis using RDS for GCNet
 # working dir: rev_depth_networks
 
 
 # %%
 def main():
-    from config.config_bnn import ConfigBNN
-    from RDS_analysis.rds_analysis_temp import RDSAnalysis
+    from config.config_gcnet import ConfigGCNet
+    from RDS_analysis.rds_analysis_v2 import RDSAnalysis
 
-    # set up BNN model and RDS analysis
-    config = ConfigBNN()
+    # set up GCNet model and RDS analysis
+    config = ConfigGCNet()
+    # Tune CPU concurrency independently of the GPU inference batch size.
+    config.rds_n_jobs = 4
+    config.svm_n_jobs = 4
+    config.rds_loader_workers = 0
     rdsa = RDSAnalysis(config)
 
-    # generate RDS dataloader
-    rds_bank = rdsa.create_rds_bank(
-        rdsa.dotMatch_list,
-        rdsa.dotDens_list,
-        rdsa.background_flag,
-        rdsa.pedestal_flag,
-    )
-
     # compute model responses to RDSs
-    rdsa.compute_disp_map_rds_group(rds_bank)
-
+    rdsa.compute_disp_map_rds_group(
+        rdsa.dotDens_list, rdsa.background_flag, rdsa.pedestal_flag
+    )
     # cross-decoding analysis with SVM
     rdsa.xDecode(rdsa.dotDens_list, rdsa.n_bootstrap, rdsa.background_flag)
 

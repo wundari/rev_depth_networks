@@ -1,5 +1,6 @@
 # %% load necessary modules
 import numpy as np
+from jaxtyping import Float, Int
 
 import torch
 from torch.utils.data import Dataset
@@ -44,12 +45,12 @@ R_DOT = 5  # rds dot radius in pixel
 class DatasetRDS(Dataset):
     def __init__(
         self,
-        rds_left,
-        rds_right,
-        rds_label,
+        rds_left: Float[np.ndarray, "n_rds h w n_rgb_channels"],
+        rds_right: Float[np.ndarray, "n_rds h w n_rgb_channels"],
+        rds_label: Int[np.ndarray, "n_rds"],
         transform=None,
     ):
-        self.rds_left = rds_left
+        self.rds_left = rds_left  # [n_rds, h, w, n_rgb_channels]
         self.rds_right = rds_right
         self.rds_label = rds_label
         self.transform = transform
@@ -79,11 +80,11 @@ class DatasetRDS(Dataset):
 class RDS_Handler:
     def __init__(
         self,
-        disp_ct_pix_list,
-        n_rds_each_disp,
-        dotDens_list,
-        background_flag,
-        overlap_flag=1,
+        disp_ct_pix_list: list,
+        n_rds_each_disp: int,
+        dotDens_list: list,
+        background_flag: bool,
+        overlap_flag: bool = True,
     ):
         """_summary_
 
@@ -172,60 +173,51 @@ class RDS_Handler:
         """
         overlap_flag = 1  # 0: dots are not allowed to overlap; 1: otherwise
 
-        n_rds = n_rds_each_disp * len(disp_ct_pix_list)
-
         rds = RDS(n_rds_each_disp, W_BG, H_BG, W_CT, H_CT, dotDens, R_DOT, overlap_flag)
         if background_flag:  # generate RDSs with cRDS background
             rds_batch_left, rds_batch_right = rds.create_rds_batch(
                 disp_ct_pix_list, dotMatch_ct
-            )  # [batch_size, len(disp_ct_pix_list), h, w]
+            )  # [n_rds_each_disp, len(disp_ct_pix_list), h, w]
             bg_message = "with cRDS background"
         else:  # without cRDS background
             rds_batch_left, rds_batch_right = rds.create_rds_without_bg_batch(
                 disp_ct_pix_list, dotMatch_ct
-            )  # [batch_size, len(disp_ct_pix), h, w]
+            )  # [n_rds_each_disp, len(disp_ct_pix), h, w]
             bg_message = "without cRDS background"
 
-        # [batch_size, len(disp_ct_pix), h, w] => [len(disp_ct_pix) * batch_size, h, w, n_rgb_channels]
-        n_channels = 3  # rgb channels
-        rds_left = np.empty((n_rds, rds.h_bg, rds.w_bg, n_channels), dtype=np.float32)
-        rds_right = np.empty((n_rds, rds.h_bg, rds.w_bg, n_channels), dtype=np.float32)
-        rds_disp = np.empty(n_rds, dtype=np.int8)
-        count = 0
         for d in range(len(disp_ct_pix_list)):
             print(
                 f"generating rds: {bg_message}, "
                 + f"dot match: {dotMatch_ct:.2f}, "
                 + f"disparity: {disp_ct_pix_list[d]}"
             )
-            # if disp_ct_pix_list[d] < 0:
-            #     depth_label = -1  # uncrossed-sisparity (far)
-            # elif disp_ct_pix_list[d] == 0:
-            #     depth_label = 0  # disparity 0
-            # else:
-            #     depth_label = 1  # crossed-disparity (near)
 
-            for t in range(n_rds_each_disp):
-                temp = rds_batch_left[t, d]
+        # [n_rds_each_disp, len(disp_ct_pix), h, w] =>
+        # [len(disp_ct_pix), n_rds_each_disp, h, w] =>
+        # [len(disp_ct_pix) * n_rds_each_disp, h, w] = [n_rds, h, w]
+        n_rds = n_rds_each_disp * len(disp_ct_pix_list)
+        left_planes = np.transpose(rds_batch_left, (1, 0, 2, 3)).reshape(
+            n_rds, rds.h_bg, rds.w_bg
+        )
+        right_planes = np.transpose(rds_batch_right, (1, 0, 2, 3)).reshape(
+            n_rds, rds.h_bg, rds.w_bg
+        )
 
-                # using pedestal
-                if pedestal_flag:
-                    # shift the whole rds to set near disp at 0 disp
-                    temp = np.roll(temp, disp_ct_pix_list[0], axis=1)
-                rds_left[count, :, :, 0] = temp
-                rds_left[count, :, :, 1] = temp
-                rds_left[count, :, :, 2] = temp
+        if pedestal_flag:
+            # shift the whole rds to set near disp at 0 disp
+            left_planes = np.roll(left_planes, disp_ct_pix_list[0], axis=-1)
 
-                temp = rds_batch_right[t, d]
-                # temp = np.roll(temp, disp_ct_pix_list[1], axis=1)
-                rds_right[count, :, :, 0] = temp
-                rds_right[count, :, :, 1] = temp
-                rds_right[count, :, :, 2] = temp
-
-                # rds_label[count] = depth_label
-                rds_disp[count] = disp_ct_pix_list[d]
-
-                count += 1
+        # [n_rds, h, w] => [n_rds, h, w, n_rgb_channels]
+        n_channels = 3  # rgb channels
+        rds_left = np.repeat(left_planes[..., None], n_channels, axis=-1).astype(
+            np.float32
+        )
+        rds_right = np.repeat(right_planes[..., None], n_channels, axis=-1).astype(
+            np.float32
+        )
+        rds_disp = np.repeat(
+            np.asarray(disp_ct_pix_list, dtype=np.int8), n_rds_each_disp
+        )
 
         return rds_left, rds_right, rds_disp
 
@@ -292,46 +284,40 @@ class RDS_Handler:
                 disp_ct_pix_list, dotMatch_ct
             )
             bg_message = "without cRDS background"
-        # rds_batch_right : [batch_size, len(disp_ct_pix), h, w]
+        # rds_batch_right : [n_rds_each_disp, len(disp_ct_pix), h, w]
 
-        # [batch_size, len(disp_ct_pix), h, w] => [len(disp_ct_pix) * batch_size, h, w, n_rgb_channels]
-        n_channels = 3  # rgb channels
-        rds_left = np.empty((n_rds, rds.h_bg, rds.w_bg, n_channels), dtype=np.float32)
-        rds_right = np.empty((n_rds, rds.h_bg, rds.w_bg, n_channels), dtype=np.float32)
-        rds_disp = np.empty(n_rds, dtype=np.int8)
-        count = 0
         for d in range(len(disp_ct_pix_list)):
             print(
                 f"generating rds: {bg_message}, "
                 + f"dot match: {dotMatch_ct:.2f}, "
                 + f"disparity: {disp_ct_pix_list[d]}"
             )
-            # if disp_ct_pix_list[d] < 0:
-            #     depth_label = -1  # uncrossed-sisparity (far)
-            # elif disp_ct_pix_list[d] == 0:
-            #     depth_label = 0  # disparity 0
-            # else:
-            #     depth_label = 1  # crossed-disparity (near)
 
-            for t in range(n_rds_each_disp):
-                # rds left
-                temp = rds_batch_right[t, d]
-                rds_left[count, :, :, 0] = temp
-                rds_left[count, :, :, 1] = temp
-                rds_left[count, :, :, 2] = temp
+        # [n_rds_each_disp, len(disp_ct_pix), h, w] =>
+        # [len(disp_ct_pix), n_rds_each_disp, h, w] =>
+        # [len(disp_ct_pix) * n_rds_each_disp, h, w] = [n_rds, h, w]
+        n_rds = n_rds_each_disp * len(disp_ct_pix_list)
+        left_planes = np.transpose(rds_batch_right, (1, 0, 2, 3)).reshape(
+            n_rds, rds.h_bg, rds.w_bg
+        )
+        right_planes = np.transpose(rds_batch_left, (1, 0, 2, 3)).reshape(
+            n_rds, rds.h_bg, rds.w_bg
+        )
 
-                temp = rds_batch_left[t, d]
-                # using pedestal
-                if pedestal_flag:
-                    # shift the whole rds to set near disp at 0 disp
-                    temp = np.roll(temp, disp_ct_pix_list[1], axis=1)
-                rds_right[count, :, :, 0] = temp
-                rds_right[count, :, :, 1] = temp
-                rds_right[count, :, :, 2] = temp
+        if pedestal_flag:
+            # shift the whole rds to set near disp at 0 disp
+            left_planes = np.roll(left_planes, disp_ct_pix_list[1], axis=-1)
 
-                # rds_label[count] = depth_label
-                rds_disp[count] = disp_ct_pix_list[d]
-
-                count += 1
+        # [n_rds, h, w] => [n_rds, h, w, n_rgb_channels]
+        n_channels = 3  # rgb channels
+        rds_left = np.repeat(left_planes[..., None], n_channels, axis=-1).astype(
+            np.float32
+        )
+        rds_right = np.repeat(right_planes[..., None], n_channels, axis=-1).astype(
+            np.float32
+        )
+        rds_disp = np.repeat(
+            np.asarray(disp_ct_pix_list, dtype=np.int8), n_rds_each_disp
+        )
 
         return rds_left, rds_right, rds_disp

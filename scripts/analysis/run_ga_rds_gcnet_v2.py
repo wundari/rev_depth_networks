@@ -1,28 +1,22 @@
 def main():
 
     # load necessary modules
-    from config.config_bnn import ConfigBNN
-    from GroupAnalysis.group_analysis_rds import GA_RDS
+    from config.config_gcnet import ConfigGCNet
+    from GroupAnalysis.group_analysis_rds_v2 import GA_RDS
 
-    # set up BNN model and RDS analysis
-    config = ConfigBNN()
+    # set up GCNet model and RDS analysis
+    config = ConfigGCNet()
+    # Tune CPU concurrency independently of the GPU inference batch size.
+    config.rds_n_jobs = 4
+    config.svm_n_jobs = 4
+    config.rds_loader_workers = 0
     ga_rds = GA_RDS(config)
-
-    # generate RDS dataloader
-    rds_bank = ga_rds.create_rds_bank(
-        ga_rds.dotMatch_list,
-        ga_rds.dotDens_list,
-        ga_rds.background_flag,
-        ga_rds.pedestal_flag,
-    )
 
     # compute disparity map
     # interactions = ga_rds.config.interactions
-    interactions = ["cmm", "sum_diff", "bem"]
+    interactions = ["cmm"]
     for interaction in interactions:
-        ga_rds.compute_disp_map_all_seeds(
-            rds_bank, interaction, ga_rds.config.n_bootstrap
-        )
+        ga_rds.compute_disp_map_all_seeds(interaction, ga_rds.config.n_bootstrap)
 
     # plot depth performance averaged across all seeds
     save_flag = True

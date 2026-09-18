@@ -1,18 +1,19 @@
 # %% load necessary modules
 import torch
 from torch import nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, ConcatDataset, SequentialSampler
 
 import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
-from tqdm import tqdm
-from scipy.stats import sem
-
 import os
 import glob
-from pathlib import Path
 import gc
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+from pathlib import Path
+from tqdm import tqdm
+from scipy.stats import sem
+from joblib import Parallel, parallel_config
 
 from engine.engine_base import EngineBase
 from RDS.DataHandler_RDS import RDS_Handler, DatasetRDS
@@ -47,6 +48,45 @@ class NormalizeRDS:
             raise ValueError("RDS pixels must be finite in [-1, 1]")
 
         return ((x + 1) / 2 - self._mean) / self._std
+
+
+def _generate_rds_condition(
+    dot_match, dot_density, disparities, n_per_disp, background, pedestal, seed
+):
+    """CPU-only job; never serialize the analysis object or its GPU model."""
+    # The original RDS generator uses NumPy's global RNG. Restore it so that
+    # serial bank generation does not alter unrelated randomness in the caller.
+    random_state = np.random.get_state()
+    try:
+        np.random.seed(seed)
+        # RDS.create_rds*_batch uses Parallel(n_jobs=-1) internally. A sequential
+        # backend keeps those calls serial without changing the original files
+        # or passing an unsupported n_jobs argument to generate_rds.
+        with parallel_config(backend="sequential"):
+            return RDS_Handler.generate_rds(
+                dot_match,
+                dot_density,
+                disparities,
+                n_per_disp,
+                background,
+                pedestal,
+            )
+    finally:
+        np.random.set_state(random_state)
+
+
+class RDSBankDataset(ConcatDataset):
+    """Conditions ordered by match, density, then the handler's disparity order."""
+
+    def __init__(self, datasets, dot_matches, dot_densities, samples_per_condition):
+        super().__init__(datasets)
+        self.dot_matches = tuple(dot_matches)
+        self.dot_densities = tuple(dot_densities)
+        self.condition_shape = (
+            len(self.dot_matches),
+            len(self.dot_densities),
+            samples_per_condition,
+        )
 
 
 class RDSAnalysis(EngineBase):
@@ -210,15 +250,20 @@ class RDSAnalysis(EngineBase):
             for module, mode in modes.items():
                 module.training = mode
 
-    @torch.inference_mode()
-    def compute_disp_map_rds(self, dotMatch, dotDens, background_flag, pedestal_flag):
+    def create_rds_bank(
+        self,
+        dotMatch_list: list,
+        dotDens_list: list,
+        background_flag: bool,
+        pedestal_flag: bool,
+    ):
         """
         generate disparity map specifically for rds for a given dot Match and dotDens.
 
         Args:
-            dotMatch (float): dot match level; between 0 (ards) to 1(crds)
+            dotMatch_list (float): a list of dot match level [0.0, 0.5, 1.0]
 
-            dotDens (float): dot density level; between 0.1 to 0.9
+            dotDens_list (float): dot density level; [0.1, ..., 0.9]
 
             background_flag ([binary 1/0]): a binary flag indicating
                     whether the RDS is surrounded by cRDS background (1) or not (0)
@@ -230,6 +275,79 @@ class RDSAnalysis(EngineBase):
                 1: with pedestal
 
         Returns:
+            rds_bank: DataLoader
+        """
+
+        n_samples = len(self.disp_ct_pix_list) * self.n_rds_each_disp
+        n_rgb_channels = 3
+        conditions = [
+            (dotMatch, dotDens)
+            for dotMatch in self.dotMatch_list
+            for dotDens in self.dotDens_list
+        ]
+        seeds = np.random.SeedSequence(self.config.seed).generate_state(len(conditions))
+        datasets = []
+        with parallel_config(backend="loky", inner_max_num_threads=1):
+            results = Parallel(n_jobs=2, return_as="generator", pre_dispatch="n_jobs")(
+                delayed(_generate_rds_condition)(
+                    dotMatch,
+                    dotDens,
+                    self.disp_ct_pix_list,
+                    self.n_rds_each_disp,
+                    background_flag,
+                    pedestal_flag,
+                    int(seed),
+                )
+                for (dotMatch, dotDens), seed in zip(conditions, seeds, strict=True)
+            )
+
+            for rds_left, rds_right, rds_label in tqdm(
+                results, total=len(conditions), desc="Generating RDS bank"
+            ):
+                expected_shape = (n_samples, self.h_bg, self.w_bg, n_rgb_channels)
+                if (
+                    rds_left.shape != expected_shape
+                    or rds_right.shape != expected_shape
+                ):
+                    raise ValueError(
+                        f"Expected RDS shape {expected_shape}, got {rds_left.shape} and {rds_right.shape}"
+                    )
+                if rds_label.shape != (n_samples,):
+                    raise ValueError(
+                        "RDS labels do not match the condition sample count"
+                    )
+
+                datasets.append(
+                    DatasetRDS(
+                        rds_left, rds_right, rds_label, transform=self.transform_data
+                    )
+                )
+
+        dataset = RDSBankDataset(datasets, dotMatch_list, dotDens_list, n_samples)
+        rds_bank = DataLoader(
+            dataset,
+            batch_size=self.batch_size_rds,
+            shuffle=False,
+            pin_memory=True,
+            drop_last=False,
+            num_workers=2,
+            prefetch_factor=2,
+        )
+
+        return rds_bank
+
+    @torch.inference_mode()
+    def compute_disp_map_rds(
+        self,
+        rds_bank: DataLoader,
+    ):
+        """
+        generate disparity map specifically for rds for a given dot Match and dotDens.
+
+        Args:
+            rds_bank: DataLoader
+
+        Returns:
             pred_disp [len(disp_ct_pix_list) * n_rds_each_disp, h_bg, w_bg)] float32:
                     predicted disparity map
 
@@ -237,46 +355,38 @@ class RDSAnalysis(EngineBase):
                 the label (near (+) or far(-)) of the predicted disparity map.
         """
 
-        print(f"disp map RDS dotMatch: {dotMatch:.2f}, dotDens: {dotDens:.2f}")
+        dataset = rds_bank.dataset
+        if not isinstance(dataset, RDSBankDataset):
+            raise TypeError("Use the DataLoader returned by create_rds_bank")
+        if not isinstance(rds_bank.sampler, SequentialSampler) or rds_bank.drop_last:
+            raise ValueError(
+                "The RDS bank must use sequential sampling and drop_last=False"
+            )
 
-        # create dataloader for RDS
-        # [len(disp_ct_pix) * n_rds_each_disp, h, w, n_channels]
-        rds_left, rds_right, rds_label = RDS_Handler.generate_rds(
-            dotMatch,
-            dotDens,
-            self.disp_ct_pix_list,
-            self.n_rds_each_disp,
-            background_flag,
-            pedestal_flag,
-        )
-
-        rds_data = DatasetRDS(
-            rds_left, rds_right, rds_label, transform=self.transform_data
-        )
-        rds_loader = DataLoader(
-            rds_data,
-            batch_size=self.batch_size_rds,
-            shuffle=False,
-            pin_memory=True,
-            drop_last=True,
-            num_workers=4,
-            prefetch_factor=2,
-        )
-
+        n_samples = len(
+            dataset
+        )  # len(self.dotMatch_list) * len(self.dotDens_list) *len(self.disp_ct_pix_list) * self.n_rds_each_disp
         pred_disp = torch.empty(
-            (len(self.disp_ct_pix_list) * self.n_rds_each_disp, self.h_bg, self.w_bg),
+            (
+                n_samples,
+                self.h_bg,
+                self.w_bg,
+            ),
             dtype=torch.float32,
         )
         pred_disp_labels = np.empty(
-            (len(self.disp_ct_pix_list) * self.n_rds_each_disp), dtype=np.int8
+            n_samples,
+            dtype=np.int8,
         )
 
         # predict disparity map
         self.model.eval()
-        tepoch = tqdm(rds_loader)
+        tepoch = tqdm(rds_bank, desc="Predicting RDS")
         for i, (inputs_left, inputs_right, disps) in enumerate(tepoch):
             # for i in range(len(rds_loader)):
             # (inputs_left, inputs_right, disps) = next(iter(rds_loader))
+
+            # print(f"disp map RDS dotMatch: {dotMatch:.2f}, dotDens: {dotDens:.2f}")
 
             # generate disparity direction
             ref = disps / 10.0
@@ -308,18 +418,15 @@ class RDSAnalysis(EngineBase):
 
             id_start = i * self.batch_size_rds
             id_end = id_start + self.batch_size_rds
-            pred_disp_labels[id_start:id_end] = disps
-            pred_disp[id_start:id_end] = disp_pred
+            pred_disp_labels[id_start:id_end] = disps.numpy()
+            pred_disp[id_start:id_end].copy_(disp_pred.float().cpu())
 
-            tepoch.set_description(
-                f"RDS dotMatch: {dotMatch:.2f}, "
-                + f"dotDens: {dotDens:.2f}, "
-                + f"iter: {i+1}/{len(rds_loader)}"
-            )
+        return (
+            pred_disp.reshape(*dataset.condition_shape, self.h_bg, self.w_bg),
+            pred_disp_labels.reshape(*dataset.condition_shape),
+        )
 
-        return pred_disp, pred_disp_labels
-
-    def compute_disp_map_rds_group(self, dotDens_list, background_flag, pedestal_flag):
+    def compute_disp_map_rds_group(self, rds_bank: DataLoader):
         """
         generate disparity map for rds for each dot density in dotDens_list
 
@@ -329,33 +436,22 @@ class RDSAnalysis(EngineBase):
                     whether the RDS is surrounded by cRDS background (1) or not (0)
         """
 
-        for dm, dotMatch in enumerate(self.dotMatch_list):
-            pred_disp = torch.empty(
-                (
-                    len(dotDens_list),
-                    len(self.disp_ct_pix_list) * self.n_rds_each_disp,
-                    self.h_bg,
-                    self.w_bg,
-                ),
-                dtype=torch.float32,
-            )
-            pred_disp_labels = np.empty(
-                (len(dotDens_list), len(self.disp_ct_pix_list) * self.n_rds_each_disp),
-                dtype=np.int8,
-            )
-            for dd, dotDens in enumerate(dotDens_list):
-
-                pred_disp[dd], pred_disp_labels[dd] = self.compute_disp_map_rds(
-                    dotMatch, dotDens, background_flag, pedestal_flag
-                )
+        # rds_bank = self.create_rds_bank(
+        #     self.dotMatch_list,
+        #     dotDens_list,
+        #     background_flag,
+        #     pedestal_flag,
+        # )
+        pred_disp, pred_disp_labels = self.compute_disp_map_rds(rds_bank)
+        for dm in range(len(self.dotMatch_list)):
 
             np.save(
                 f"{self.xDecode_dir}/pred_disp_{self.rds_type[dm]}.npy",
-                pred_disp.numpy(),
+                pred_disp[dm].numpy(),
             )
             np.save(
                 f"{self.xDecode_dir}/pred_disp_labels_{self.rds_type[dm]}.npy",
-                pred_disp_labels,
+                pred_disp_labels[dm],
             )
 
         # return pred_disp, pred_disp_labels

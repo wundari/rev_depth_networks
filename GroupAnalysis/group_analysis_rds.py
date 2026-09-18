@@ -5,16 +5,16 @@ working directory: BNN
 """
 
 # %% load necessary modules
-import gc
 import os
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy.stats import sem
+from torch.utils.data import DataLoader
 
 from config.config_bnn import ConfigBNN
 from config.config_gcnet import ConfigGCNet
-from RDS_analysis.rds_analysis import RDSAnalysis
+from RDS_analysis.rds_analysis_temp import RDSAnalysis
 
 
 # %%
@@ -100,7 +100,7 @@ class GA_RDS(RDSAnalysis):
         )
 
     def compute_disp_map_all_seeds(
-        self, interaction: str, n_bootstrap: int = 1000
+        self, rds_bank: DataLoader, interaction: str, n_bootstrap: int = 1000
     ) -> None:
         """
         Predict RDS disparity maps for all seeds and a binocular interaction.
@@ -131,9 +131,7 @@ class GA_RDS(RDSAnalysis):
             self.model.to(self.device)
 
             # compute model responses to RDSs
-            self.compute_disp_map_rds_group(
-                self.dotDens_list, self.background_flag, self.pedestal_flag
-            )
+            self.compute_disp_map_rds_group(rds_bank)
 
             # cross-decoding analysis with SVM
             self.xDecode(self.dotDens_list, n_bootstrap, self.background_flag)

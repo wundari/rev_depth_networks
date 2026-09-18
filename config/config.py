@@ -99,7 +99,7 @@ class Config:
 
     # rds parameters
     target_disp: int = 10  # RDS target disparity (pix) to be analyzed
-    n_rds_each_disp: int = 512  # n_rds for each disparity magnitude in disp_ct_pix
+    n_rds_each_disp: int = 256  # n_rds for each disparity magnitude in disp_ct_pix
     dotDens_list: list[float] = field(
         default_factory=lambda: np.round(0.1 * np.arange(1, 10), 2).tolist()
     )  # dot densities for in-silico analysis
