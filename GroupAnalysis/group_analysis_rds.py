@@ -55,6 +55,7 @@ class GA_RDS(RDSAnalysis):
         seed_old = self.seed
         epoch_old = self.epoch
         iter_old = self.iter
+        batch_size_rds_old = self.batch_size_rds
 
         # update binocular_interaction, seed, epoch, iter, and model_pretrained in
         # the class and config
@@ -132,7 +133,7 @@ class GA_RDS(RDSAnalysis):
             self.model.to(self.device)
 
             # compute model responses to RDSs
-            self.compute_disp_map_rds_group(rds_bank)
+            # self.compute_disp_map_rds_group(rds_bank)
 
             # cross-decoding analysis with SVM
             self.xDecode(self.dotDens_list, n_bootstrap, self.background_flag)

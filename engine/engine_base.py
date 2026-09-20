@@ -480,7 +480,7 @@ class EngineBase:
         for name, values in self.history.items():
             np.save(Path(self.experiment_dir) / f"{name}.npy", values)
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def _save_prediction_snapshot(self, loader, epoch: int):
         """
         Periodically save a qualitative left/right/pred/gt figure.
@@ -554,7 +554,7 @@ class EngineBase:
         self.model.eval()
 
         try:
-            with torch.no_grad():
+            with torch.inference_mode():
                 for batch in batches_for_evaluation(loader, self.config.n_iter_eval):
                     inputs = self._to_device(batch)
                     with torch.autocast(
@@ -694,8 +694,7 @@ class EngineBase:
                 scaler.scale(loss).backward()
 
                 # clip norm
-                # if max_norm > 0:
-                scaler.unscale_(optimizer)
+                # scaler.unscale_(optimizer)
                 if self.config.clip_max_norm:
                     torch.nn.utils.clip_grad_norm_(
                         self.model.parameters(), self.config.clip_max_norm

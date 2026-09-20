@@ -185,8 +185,8 @@ def xDecode_single_bootstrap(
 
     # train classifier
     clf = SVC(kernel="linear", cache_size=1000)
-    # clf.fit(X_train_split, Y_train_split)
-    clf.fit((X_train_split - x_mean) / x_std, Y_train_split)
+    clf.fit(X_train_split, Y_train_split)
+    # clf.fit((X_train_split - x_mean) / x_std, Y_train_split)
 
     score_ards = np.empty(n_dotDens, dtype=np.float32)
     score_hmrds = np.empty(n_dotDens, dtype=np.float32)
@@ -201,16 +201,16 @@ def xDecode_single_bootstrap(
 
         ## evaluate on ards
         # predict output
-        # predict_ards[dd] = clf.predict(X_ards[dd])
-        predict_ards[dd] = clf.predict(((X_ards[dd] - x_mean) / x_std))
+        predict_ards[dd] = clf.predict(X_ards[dd])
+        # predict_ards[dd] = clf.predict(((X_ards[dd] - x_mean) / x_std))
         # compute score
         # score_ards[dd] = clf.score(X_ards[dd], Y_ards[dd])
         score_ards[dd] = (predict_ards[dd] == Y_ards[dd]).mean()
 
         ## evaluate on hmrds
         # predict output
-        # predict_hmrds[dd] = clf.predict(X_hmrds[dd])
-        predict_hmrds[dd] = clf.predict(((X_hmrds[dd] - x_mean) / x_std))
+        predict_hmrds[dd] = clf.predict(X_hmrds[dd])
+        # predict_hmrds[dd] = clf.predict(((X_hmrds[dd] - x_mean) / x_std))
         # compute score
         # score_hmrds[dd] = clf.score(X_hmrds[dd], Y_hmrds[dd])
         score_hmrds[dd] = (predict_hmrds[dd] == Y_hmrds[dd]).mean()
@@ -219,8 +219,8 @@ def xDecode_single_bootstrap(
         X_test = X_train[dd, idx_test]
         Y_test = Y_train[dd, idx_test]
         # predict output
-        # predict_crds[dd] = clf.predict(X_test)
-        predict_crds[dd] = clf.predict(((X_test - x_mean) / x_std))
+        predict_crds[dd] = clf.predict(X_test)
+        # predict_crds[dd] = clf.predict(((X_test - x_mean) / x_std))
         # compute score
         # score_crds[dd] = clf.score(X_test, Y_test)
         score_crds[dd] = (predict_crds[dd] == Y_test).mean()

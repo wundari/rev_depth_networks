@@ -31,7 +31,7 @@ class Config:
 
     # training params
     batch_size: int = 4
-    batch_size_val: int = 8
+    batch_size_val: int = 4
     num_workers: int = 4  # the number of cpu cores for train dataloader
     eval_num_workers: int = 4  # the number of cpu cores for val dataloader
     persistent_workers: bool = True
@@ -49,12 +49,14 @@ class Config:
     # logging
     log_tqdm: bool = False  # whether to monitor loss values using tqdm
     log_interval: int = 100  # interval for tqdm logging
-    eval_interval: int = 500  # interval for calculating validation error
-    n_iter_eval: int = 400  # the number of datasets to compute validation performance
+    eval_interval: int = 100  # 500  # interval for calculating validation error
+    n_iter_eval: int = (
+        200  # 400  # the number of datasets to compute validation performance
+    )
     save_snapshot: bool = (
         True  # whether to save predicted disparity map at the end of each epoch
     )
-    clip_max_norm: float = 1.0  # gradient clipping max norm
+    clip_max_norm: float = 0.1  # 1.0  # gradient clipping max norm
     device: str = (
         "cuda"
         if torch.cuda.is_available()
@@ -97,7 +99,7 @@ class Config:
         ]
     )
 
-    # rds parameters
+    # RDS parameters
     target_disp: int = 10  # RDS target disparity (pix) to be analyzed
     n_rds_each_disp: int = 512  # n_rds for each disparity magnitude in disp_ct_pix
     dotDens_list: list[float] = field(
@@ -111,8 +113,4 @@ class Config:
     )  # dot match
     background_flag: bool = True  # 1: with cRDS background
     pedestal_flag: bool = False  # 1: use pedestal to ensure rds disparity > 0
-    batch_size_rds: int = 16
-    assert (
-        n_rds_each_disp % batch_size_rds == 0
-    ), "n_rds_each_disp must be divisible by batch_size_rds"
     n_bootstrap: int = 1000  # number of bootstrap samples for cross-decoding analysis

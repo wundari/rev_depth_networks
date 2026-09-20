@@ -15,12 +15,9 @@ def main():
     )
 
     # compute disparity map
-    interactions = ga_rds.config.interactions
+    # interactions = ga_rds.config.interactions
+    interactions = ["bem"]
     for interaction in interactions:
-        if interaction == "bem":
-            ga_rds.batch_size_rds = (
-                8  # reduce batch size for bem as it consumes more GPU
-            )
         ga_rds.compute_disp_map_all_seeds(
             rds_bank, interaction, ga_rds.config.n_bootstrap
         )

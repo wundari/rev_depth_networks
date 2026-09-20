@@ -522,6 +522,11 @@ class RDSAnalysis(EngineBase):
         if not isinstance(dataset, RDSBankDataset):
             raise TypeError("Use the DataLoader returned by create_rds_bank")
 
+        print(
+            "==============================================================\n"
+            + f"Computing model responses to RDSs, batch size: {self.batch_size_rds}\n"
+            + "==============================================================\n"
+        )
         pred_disp, pred_disp_labels = self.compute_disp_map_rds(rds_bank)
         for dm in range(len(self.dotMatch_list)):
             np.save(
