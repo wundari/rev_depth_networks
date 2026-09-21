@@ -1,30 +1,16 @@
 # %% load necessary modules
 import torch
 import torch.nn.functional as F
-import torchvision.transforms as transforms
-import torch._dynamo
 from torch import nn
 from torch.utils.data import DataLoader
 from torch import Tensor
 
-import sys
-
-# sys.path.append("engine")
-from engine.engine_base import EngineBase
+from RDS_analysis.rds_analysis_v2 import RDSAnalysis
 from RDS.DataHandler_RDS import RDS_Handler, DatasetRDS
-
-# from GC_Net_v2 import *
 
 from utilities.utils import *
 from utilities.output_hook import ModuleOutputsHook
 from utilities.misc import NestedTensor
-
-# settings for pytorch 2.0 compile
-torch.backends.cuda.matmul.allow_tf32 = True  # allow tf32 on matmul
-torch.backends.cudnn.allow_tf32 = True  # allow tf32 on cudnn
-torch.backends.cudnn.benchmark = False
-torch.backends.cudnn.deterministic = True
-device = torch.device("cuda" if torch.cuda.is_available() else "mps")
 
 import numpy as np
 import os
@@ -38,7 +24,8 @@ patch_sklearn()
 from sklearn import svm
 
 from jaxtyping import Float
-from config.config import ConfigGCNet
+from config.config_bnn import ConfigBNN
+from config.config_gcnet import ConfigGCNet
 
 # reproducibility
 import random
@@ -68,92 +55,42 @@ g.manual_seed(seed_number)
 
 
 # %%
-class RDS_LayerAct(EngineBase):
+class RDS_LayerAct(RDSAnalysis):
 
-    def __init__(self, config: ConfigGCNet, params_rds: dict) -> None:
+    def __init__(self, config: ConfigBNN | ConfigGCNet) -> None:
 
         super().__init__(config)
 
-        # rds parameters
-        self.target_disp = params_rds[
-            "target_disp"
-        ]  # RDS target disparity (pix) to be analyzed
-        self.n_rds_each_disp = params_rds[
-            "n_rds_each_disp"
-        ]  # n_rds for each disparity magnitude in disp_ct_pix
-        self.dotDens_list = params_rds["dotDens_list"]  # dot density
-        self.rds_type = params_rds["rds_type"]  # ards: 0, crds: 1, hmrds: 0.5, urds: -1
-        self.batch_size = params_rds["batch_size_rds"]
-        self.dotMatch_list = params_rds["dotMatch_list"]  # dot match
-        self.disp_ct_pix_list = [
-            self.target_disp,
-            -self.target_disp,
-        ]  # disparity magnitude: GC-Net (+ near, - far)
-        self.background_flag = params_rds["background_flag"]
-        self.pedestal_flag = params_rds[
-            "pedestal_flag"
-        ]  # 1: use pedestal to ensure rds disparity > 0
-        self.n_bootstrap = params_rds["n_bootstrap"]
-
-        # transform rds to tensor and in range [0, 1]
-        # self.transform_data = transforms.Compose(
-        #     [transforms.ToTensor(), transforms.Lambda(lambda t: (t + 1.0) / 2.0)]
-        # )
-        # mean = (0.485 * 255.0, 0.456 * 255.0, 0.406 * 255.0)
-        # std = (0.229 * 255.0, 0.224 * 255.0, 0.225 * 255.0)
-        mean = (0.485, 0.456, 0.406)
-        std = (0.229, 0.224, 0.225)
-        # mean = np.array([0.5, 0.5, 0.5])
-        # std = np.array([0.5, 0.5, 0.5])
-        self.transform_data = transforms.Compose(
-            [
-                transforms.ToTensor(),
-                transforms.Lambda(lambda t: (t + 1.0) / 2.0),
-                transforms.Normalize(mean, std),
+        # reset target layer names, important for hooking
+        if self.model_name == "BNN":
+            self.target_list = [
+                self.model.encoder.in_conv[0],
+                self.model.encoder.layer2[0],
+                self.model.decoder.layer3[0],
+                self.model.decoder.layer4,
             ]
-        )
-
-        # folders for rds analysis
-        self.rds_dir = (
-            f"{self.save_dir}/"
-            + f"epoch_{self.config.epoch_to_load}"
-            + f"_iter_{self.config.iter_to_load}"
-            + f"/rds_analysis/target_disp_{self.target_disp}px"
-        )
-        if not os.path.exists(self.rds_dir):
-            os.makedirs(self.rds_dir)
-
-        # create folders for rds layer activation
-        if self.pedestal_flag:
-            self.layer_act_dir = (
-                f"{self.rds_dir}/layer_activation_analysis_with_pedestal"
-            )
-        else:
-            self.layer_act_dir = f"{self.rds_dir}/layer_activation_analysis_wo_pedestal"
-        if not os.path.exists(self.layer_act_dir):
-            os.mkdir(self.layer_act_dir)
-
-        self.target_list = [
-            self.model.decoder.layer19[0],
-            self.model.decoder.layer20[0],
-            self.model.decoder.layer21[0],
-            self.model.decoder.layer22[0],
-            self.model.decoder.layer23[0],
-            self.model.decoder.layer24[0],
-            self.model.decoder.layer25[0],
-            self.model.decoder.layer26[0],
-            self.model.decoder.layer27[0],
-            self.model.decoder.layer28[0],
-            self.model.decoder.layer29[0],
-            self.model.decoder.layer30[0],
-            self.model.decoder.layer31[0],
-            self.model.decoder.layer32[0],
-            self.model.decoder.layer33a[0],
-            self.model.decoder.layer34a[0],
-            self.model.decoder.layer35a[0],
-            self.model.decoder.layer36a[0],
-            self.model.decoder.layer37,
-        ]
+        elif self.model_name == "GC_Net":
+            self.target_list = [
+                self.model.decoder.layer19[0],
+                self.model.decoder.layer20[0],
+                self.model.decoder.layer21[0],
+                self.model.decoder.layer22[0],
+                self.model.decoder.layer23[0],
+                self.model.decoder.layer24[0],
+                self.model.decoder.layer25[0],
+                self.model.decoder.layer26[0],
+                self.model.decoder.layer27[0],
+                self.model.decoder.layer28[0],
+                self.model.decoder.layer29[0],
+                self.model.decoder.layer30[0],
+                self.model.decoder.layer31[0],
+                self.model.decoder.layer32[0],
+                self.model.decoder.layer33a[0],
+                self.model.decoder.layer34a[0],
+                self.model.decoder.layer35a[0],
+                self.model.decoder.layer36a[0],
+                self.model.decoder.layer37,
+            ]
 
         self.layer_name = [
             "layer19",
@@ -196,6 +133,7 @@ class RDS_LayerAct(EngineBase):
 
         return disp_indices
 
+    @torch.inference_mode()
     def compute_layer_activations(
         self,
         input_data: NestedTensor,
@@ -214,7 +152,6 @@ class RDS_LayerAct(EngineBase):
                 - target = [model.layer35a]
                 - target = [model.layer19, model.layer20, ...] # many layers
 
-
         Returns:
             module_outputs (list): a list containing the target layer
                     activations.
@@ -229,18 +166,62 @@ class RDS_LayerAct(EngineBase):
             hook = ModuleOutputsHook([target])
             # hook = ModuleOutputsHook([model.layer36a])
 
-        # compute model's output.
-        logits = self.model(input_data)
+        modes = {m: m.training for m in self.model.modules()}
+        self.model.eval()
+        try:
+            self.model(input_data)
+            return {
+                m: value.detach().clone() for m, value in hook.consume_outputs().items()
+            }
+        finally:
+            hook.remove_hooks()
+            for module, mode in modes.items():
+                module.training = mode
 
-        # consume_outputs return the captured values and resets the hook's state
-        # compute module output
-        module_outputs = hook.consume_outputs()
-        # activations = module_outputs[target]
-        # activations = module_outputs[model.layer36a]
+    # def compute_layer_activations(
+    #     self,
+    #     input_data: NestedTensor,
+    #     target: nn.Module,
+    # ) -> dict:
+    #     """
+    #     compute layer activation in respond to left and right inputs.
 
-        hook.remove_hooks()
+    #     Args:
+    #         image_left_gpu (_type_): _description_
+    #         image_right_gpu (_type_): _description_
+    #         target (nn.Module): the target layer to be computed.
+    #             it can be either in this form:
+    #             - target = model.layer35a
+    #             - target = model.layer35a[0] # the convolutional output
+    #             - target = [model.layer35a]
+    #             - target = [model.layer19, model.layer20, ...] # many layers
 
-        return module_outputs
+    #     Returns:
+    #         module_outputs (list): a list containing the target layer
+    #                 activations.
+
+    #     """
+
+    #     # get layer activation to get layer dimension
+    #     # define hook
+    #     if isinstance(target, list):
+    #         hook = ModuleOutputsHook(target)
+    #     else:
+    #         hook = ModuleOutputsHook([target])
+    #         # hook = ModuleOutputsHook([model.layer36a])
+
+    #     # compute model's output.
+    #     logits = self.model(input_data)
+
+    #     # consume_outputs return the captured values and resets the hook's state
+    #     # compute module output
+    #     module_outputs = hook.consume_outputs()
+    #     # activations = module_outputs[target]
+    #     # activations = module_outputs[model.layer36a]
+
+    #     hook.remove_hooks()
+
+    #     return module_outputs
 
     def _generate_rds_loader(
         self,

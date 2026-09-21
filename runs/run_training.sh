@@ -54,8 +54,8 @@
 #     done
 # done
 
-interactions=("bem")
-seeds=(1618 11364 16476 27829 35154 35744 36675 43798 55826 59035 65190 82220 94750)
+interactions=("bem" "default" "cmm" "sum_diff")
+seeds=(1618)
 for interaction in "${interactions[@]}"; do
     for seed in "${seeds[@]}"; do
         sed -i -E \

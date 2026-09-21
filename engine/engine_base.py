@@ -694,7 +694,7 @@ class EngineBase:
                 scaler.scale(loss).backward()
 
                 # clip norm
-                # scaler.unscale_(optimizer)
+                scaler.unscale_(optimizer)
                 if self.config.clip_max_norm:
                     torch.nn.utils.clip_grad_norm_(
                         self.model.parameters(), self.config.clip_max_norm

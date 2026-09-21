@@ -15,8 +15,8 @@ def main():
     )
 
     # compute disparity map
-    # interactions = ga_rds.config.interactions
-    interactions = ["bem"]
+    interactions = ga_rds.config.interactions
+    # interactions = ["bem"]
     for interaction in interactions:
         ga_rds.compute_disp_map_all_seeds(
             rds_bank, interaction, ga_rds.config.n_bootstrap

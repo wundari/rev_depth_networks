@@ -133,7 +133,7 @@ class GA_RDS(RDSAnalysis):
             self.model.to(self.device)
 
             # compute model responses to RDSs
-            # self.compute_disp_map_rds_group(rds_bank)
+            self.compute_disp_map_rds_group(rds_bank)
 
             # cross-decoding analysis with SVM
             self.xDecode(self.dotDens_list, n_bootstrap, self.background_flag)

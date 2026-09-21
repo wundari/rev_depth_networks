@@ -732,7 +732,7 @@ class RDSAnalysis(EngineBase):
         fig.text(
             0.5,
             1.0,
-            "BNN depth performance single seed\n"
+            f"{self.model_name} depth performance single seed\n"
             + f"({self.config.binocular_interaction})",
             ha="center",
         )

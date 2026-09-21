@@ -8,7 +8,7 @@ from dataclasses_json import dataclass_json
 class ConfigGCNet(Config):
 
     model_name: str = "GC_Net"
-    binocular_interaction: str = "bem"
+    binocular_interaction: str = "sum_diff"
     seed: int = 1618
 
     # RDS parameters
@@ -18,12 +18,12 @@ class ConfigGCNet(Config):
     ), "n_rds_each_disp must be divisible by batch_size_rds"
 
     # resume from checkpoint
-    load_state: bool = True
+    load_state: bool = False
     if load_state:
         compile_mode = None
     experiment_id: int = seed  # experiment id for loading pretrained DNN
-    epoch_to_load = 7
-    iter_to_load = 12800
+    epoch_to_load = 9
+    iter_to_load = 17000
     model_pretrained: str = (
         f"epoch_{epoch_to_load}_iter_{iter_to_load}_model_best.pth.tar"  # pretrained file name, e.g: epoch_1_model.pth.tar
     )
@@ -31,7 +31,7 @@ class ConfigGCNet(Config):
     # bino_interaction: default, batch size 4
     epoch_iter_to_load_default: list[tuple[int, int]] = field(
         default_factory=lambda: [
-            (9, 16500),  # seed 1618
+            (8, 15400),  # seed 1618
             (9, 16000),  # seed 11364
             (9, 16500),  # seed 16476
             (9, 17000),  # seed 27829
@@ -50,7 +50,7 @@ class ConfigGCNet(Config):
     # bino_interaction: bem, batch size 4
     epoch_iter_to_load_bem: list[tuple[int, int]] = field(
         default_factory=lambda: [
-            (9, 16500),  # seed 1618
+            (9, 17100),  # seed 1618
             (9, 17500),  # seed 11364
             (9, 16500),  # seed 16476
             (9, 17000),  # seed 27829
@@ -69,7 +69,7 @@ class ConfigGCNet(Config):
     # bino_interaction: cmm, batch size 4
     epoch_iter_to_load_cmm: list[tuple[int, int]] = field(
         default_factory=lambda: [
-            (9, 16000),  # seed 1618
+            (9, 17300),  # seed 1618
             (9, 17500),  # seed 11364
             (8, 15500),  # seed 16476
             (9, 17500),  # seed 27829
@@ -88,7 +88,7 @@ class ConfigGCNet(Config):
     # bino_interaction: sum_diff, batch size 4
     epoch_iter_to_load_sum_diff: list[tuple[int, int]] = field(
         default_factory=lambda: [
-            (9, 16500),  # seed 1618
+            (9, 16800),  # seed 1618
             (8, 14500),  # seed 11364
             (9, 16000),  # seed 16476
             (8, 15500),  # seed 27829

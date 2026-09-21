@@ -13,10 +13,10 @@ from dataclasses_json import dataclass_json
 class Config:
 
     # learning params
-    lr: float = 6e-4
+    lr: float = 9e-4  # 6e-4
     # lr_decay_rate: float = 0.99
-    max_lr: float = 6e-4  # 6e-4
-    min_lr: float = 6e-5
+    max_lr: float = 9e-4  # 6e-4
+    min_lr: float = 9e-5  # 6e-5
     warmup_steps: int = 250
 
     # dataset parameter
@@ -24,7 +24,7 @@ class Config:
     dataset_directory: str = ""
     validation: str = "validation"
     checkpoint: str = "dev"
-    c_disp_shift: float = 2.0  # a multiplier for shifting disparity map
+    c_disp_shift: float = 1.5  # 2.0  # a multiplier for shifting disparity map
     validation_fraction: float = 0.1  # fraction of dataset used for validation
     test_fraction: float = 0.1  # fraction of dataset used for testing
     split_seed: int = 42  # fixed across all model seeds/interactions
@@ -84,18 +84,18 @@ class Config:
     seed_to_analyse: list[int] = field(
         default_factory=lambda: [
             1618,
-            11364,
-            16476,
-            27829,
-            35154,
-            35744,
-            36675,
-            43798,
-            55826,
-            59035,
-            65190,
-            82220,
-            94750,
+            # 11364,
+            # 16476,
+            # 27829,
+            # 35154,
+            # 35744,
+            # 36675,
+            # 43798,
+            # 55826,
+            # 59035,
+            # 65190,
+            # 82220,
+            # 94750,
         ]
     )
 
