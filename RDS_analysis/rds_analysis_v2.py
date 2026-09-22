@@ -170,37 +170,6 @@ class RDSAnalysis(EngineBase):
         # transform rds to tensor and in range [0, 1]
         self.transform_data = NormalizeRDS()
 
-        # reset target layer names, important for hooking
-        if self.model_name == "BNN":
-            self.target_list = [
-                self.model.encoder.in_conv[0],
-                self.model.encoder.layer2[0],
-                self.model.decoder.layer3[0],
-                self.model.decoder.layer4,
-            ]
-        elif self.model_name == "GC_Net":
-            self.target_list = [
-                self.model.decoder.layer19[0],
-                self.model.decoder.layer20[0],
-                self.model.decoder.layer21[0],
-                self.model.decoder.layer22[0],
-                self.model.decoder.layer23[0],
-                self.model.decoder.layer24[0],
-                self.model.decoder.layer25[0],
-                self.model.decoder.layer26[0],
-                self.model.decoder.layer27[0],
-                self.model.decoder.layer28[0],
-                self.model.decoder.layer29[0],
-                self.model.decoder.layer30[0],
-                self.model.decoder.layer31[0],
-                self.model.decoder.layer32[0],
-                self.model.decoder.layer33a[0],
-                self.model.decoder.layer34a[0],
-                self.model.decoder.layer35a[0],
-                self.model.decoder.layer36a[0],
-                self.model.decoder.layer37,
-            ]
-
     def __getconfig_rds___(self):
         print(
             "==============================================================\n"
@@ -241,51 +210,6 @@ class RDSAnalysis(EngineBase):
             return build_bnn(config)
         elif config.model_name == "GC_Net":
             return build_gcnet(config)
-
-    @torch.inference_mode()
-    def compute_layer_activations(
-        self,
-        input_data: NestedTensor,
-        target: nn.Module,
-    ) -> dict:
-        """
-        compute layer activation in respond to left and right inputs.
-
-        Args:
-            image_left_gpu (_type_): _description_
-            image_right_gpu (_type_): _description_
-            target (nn.Module): the target layer to be computed.
-                it can be either in this form:
-                - target = model.layer35a
-                - target = model.layer35a[0] # the convolutional output
-                - target = [model.layer35a]
-                - target = [model.layer19, model.layer20, ...] # many layers
-
-        Returns:
-            module_outputs (list): a list containing the target layer
-                    activations.
-
-        """
-
-        # get layer activation to get layer dimension
-        # define hook
-        if isinstance(target, list):
-            hook = ModuleOutputsHook(target)
-        else:
-            hook = ModuleOutputsHook([target])
-            # hook = ModuleOutputsHook([model.layer36a])
-
-        modes = {m: m.training for m in self.model.modules()}
-        self.model.eval()
-        try:
-            self.model(input_data)
-            return {
-                m: value.detach().clone() for m, value in hook.consume_outputs().items()
-            }
-        finally:
-            hook.remove_hooks()
-            for module, mode in modes.items():
-                module.training = mode
 
     def create_rds_bank(
         self,
