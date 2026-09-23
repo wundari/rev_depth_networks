@@ -26,7 +26,7 @@ from sklearn.model_selection import GroupShuffleSplit
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
-from jaxtyping import Float
+from jaxtyping import Float, Bool
 from config.config_bnn import ConfigBNN
 from config.config_gcnet import ConfigGCNet
 
@@ -683,6 +683,42 @@ class RDS_LayerAct(RDSAnalysis):
     #         score_crds,
     #     )
 
+    @staticmethod
+    def _cosine_sim_rows(
+        disp_direction1: Float[np.ndarray, "B n_feat"],
+        disp_direction2: Float[np.ndarray, "B n_feat"],
+        tol: float,
+    ) -> Float[np.ndarray, "B"]:
+        """
+        Row-wise cosine similarity; zero/near-zero axes have undefined direction (NaN).
+        """
+
+        first_norm = np.linalg.norm(disp_direction1, axis=1)
+        second_norm = np.linalg.norm(disp_direction2, axis=1)
+        valid = (first_norm > tol) & (second_norm > tol)
+        scores = np.full(disp_direction1.shape[0], np.nan, dtype=np.float64)
+
+        # Normalize before taking the dot product; avoid an all-pairs matrix.
+        scores[valid] = np.einsum(
+            "ij, ij -> i",
+            disp_direction1[valid] / first_norm[valid, None],
+            disp_direction2[valid] / second_norm[valid, None],
+        )
+        return np.clip(scores, -1.0, 1.0)
+
+    @staticmethod
+    def _contrast_weights(
+        mask: Bool[np.ndarray, "n_bootstrap n_samples"],
+        label: Bool[np.ndarray, "n_samples"],
+    ) -> Float[np.ndarray, "n_bootstrap n_samples"]:
+        is_near = label > 0
+        is_far = label < 0
+        mask_near = is_near[None, :]
+        mask_far = is_far[None, :]
+        near = (mask & mask_near) / mask_near.sum(axis=1, keepdims=True)
+        far = (mask & mask_far) / mask_far.sum(axis=1, keepdims=True)
+        return near - far
+
     def compute_cosine_similarity(
         self,
         dotDens: float,
@@ -690,11 +726,6 @@ class RDS_LayerAct(RDSAnalysis):
         n_bootstrap: int,
         split_seed: int = 3407,
     ):
-
-        def delta_disparity(features, labels):
-            near = features[labels > 0]  # .mean(axis=0)
-            far = features[labels < 0]  # .mean(axis=0)
-            return near - far
 
         # load layer activation
         data, labels = {}, {}
@@ -726,60 +757,320 @@ class RDS_LayerAct(RDSAnalysis):
             raise ValueError(
                 "Too few independent groups; increase samples or reduce inference batch size"
             )
-        splits = list(
-            GroupShuffleSplit(
-                n_splits=n_bootstrap,
-                train_size=split_train,
-                random_state=split_seed,
-            ).split(np.zeros(len(y)), y, groups)
+        splitter = GroupShuffleSplit(
+            n_splits=n_bootstrap,
+            train_size=split_train,
+            random_state=split_seed,
         )
-        for train, test in splits:
+
+        # create near/far membership matrices [n_bootstrap, n_sample]
+        # Shared by every layer: turns an (n_layers * n_bootstrap)-iteration
+        mask_train = np.zeros((n_bootstrap, len(y)), dtype=bool)
+        for repeat, (train, test) in enumerate(
+            splitter.split(np.zeros(len(y)), y, groups)
+        ):
             if len(np.unique(y[train])) != 2 or len(np.unique(y[test])) != 2:
                 raise ValueError("Both disparity classes must occur in each fold")
 
-        scores = {
-            "crds_ards": np.empty((n_bootstrap, len(self.layer_name)), np.float32),
-            "crds_hmrds": np.empty((n_bootstrap, len(self.layer_name)), np.float32),
+            mask_train[repeat, train] = True
+
+        # array allocations
+        conditions = ("crds", "hmrds", "ards")
+        pairs = {
+            "crds_ards": ("crds", "ards"),
+            "crds_hmrds": ("crds", "hmrds"),
+            "hmrds_ards": ("hmrds", "ards"),
+        }
+        weights_train = self._contrast_weights(
+            mask_train, y
+        )  # [n_bootstrap, n_samples]
+        weights_test = self._contrast_weights(
+            ~mask_train, y
+        )  # [n_bootstrap, n_samples]
+        shape = (n_bootstrap, len(self.layer_name))
+        alignment = {pair: np.full(shape, np.nan, dtype=np.float32) for pair in pairs}
+        reliability = {
+            cond: np.full(shape, np.nan, dtype=np.float32) for cond in conditions
         }
 
+        chunk_size = 128
+        tol = 1e-12
         for layer_idx, layer_name in enumerate(
             tqdm(self.layer_name, desc="Cosine similarity")
         ):
 
-            x = {condition: values[layer_name] for condition, values in data.items()}
-            if any(
-                value.ndim != 2
-                or value.shape[0] != len(y)
-                or not np.isfinite(value).all()
-                for value in x.values()
-            ):
-                raise ValueError(f"Invalid feature arrays for {layer_name}")
+            x = {condition: data[condition][layer_name] for condition in conditions}
+            # sanity check
+            for condition, value in x.items():
+                if (
+                    value.ndim != 2
+                    or value.shape[0] != len(y)
+                    or value.shape[1] == 0
+                    or not np.isfinite(value).all()
+                ):
+                    raise ValueError(
+                        f"Invalid feature arrays for {condition} at {layer_name}"
+                    )
 
-            for repeat, (train, test) in enumerate(splits):
+            if len({value.shape[1] for value in x.values()}) != 1:
+                raise ValueError(
+                    f"Feature dimensionality differs between conditions at {layer_name}"
+                )
 
-                feat_crds = x["crds"][train]
-                feat_hmrds = x["hmrds"][train]
-                feat_ards = x["ards"][train]
+            # Float64 accumulation; subtract a shared reference row per
+            # condition to reduce cancellation error. Contrast weights sum to
+            # zero (+1 total on near rows, -1 total on far rows), so shifting
+            # every row of a condition by the same constant vector does not
+            # change the weighted near-minus-far result.
+            centered = {}
+            for condition, values in x.items():
+                value = np.asarray(values, dtype=np.float64)  # [n_samples, n_feat]
+                centered[condition] = value - value[0]
 
-                delta_crds = delta_disparity(feat_crds, y[train])
-                delta_ards = delta_disparity(feat_ards, y[train])
-                delta_hmrds = delta_disparity(feat_hmrds, y[train])
+            for begin in range(0, n_bootstrap, chunk_size):
+                # begin = 0
+                end = min(begin + chunk_size, n_bootstrap)
 
-                scores["crds_ards"][repeat, layer_idx] = cosine_similarity(
-                    delta_crds, delta_ards
-                ).mean()
-                scores["crds_hmrds"][repeat, layer_idx] = cosine_similarity(
-                    delta_crds, delta_hmrds
-                ).mean()
+                train_axes = {}
+                for condition in conditions:
 
-        for condition, score in scores.items():
+                    train_ax = (
+                        weights_train[begin:end] @ centered[condition]
+                    )  # [chunk_size, n_samples] x [n_samples, n_feat]
+                    # = [chunck_size, n_feat]
+                    test_ax = (
+                        weights_test[begin:end] @ centered[condition]
+                    )  # [chunk_size, n_samples] x [n_samples, n_feat]
+                    # = [chunck_size, n_feat]
+                    train_axes[condition] = train_ax
+
+                    # compute reliability: cosine_similarity between training and test set
+                    # cos_sim = _cosine_sim_rows(train_ax, test_ax, tol)
+                    reliability[condition][begin:end, layer_idx] = (
+                        self._cosine_sim_rows(train_ax, test_ax, tol)
+                    )
+
+                # compute alignment: cosine similarity between rds conditions
+                for pair, (rds1, rds2) in pairs.items():
+                    alignment[pair][begin:end, layer_idx] = self._cosine_sim_rows(
+                        train_axes[rds1], train_axes[rds2], tol
+                    )
+            del centered
+
+        for pair, score in alignment.items():
             np.save(
                 Path(self.layer_act_dir)
-                / f"cosineSim_score_{condition}_dotDens_{dotDens:.2f}_bootstrap.npy",
+                / f"cosineSim_align_{pair}_dotDens_{dotDens:.2f}_bootstrap.npy",
+                score,
+            )
+        for condition, score in reliability.items():
+            np.save(
+                Path(self.layer_act_dir)
+                / f"cosineSim_reliab_{condition}_dotDens_{dotDens:.2f}_bootstrap.npy",
                 score,
             )
 
-        return cosine_sim_crds_ards, cosine_sim_crds_hmrds
+        return {"alignment": alignment, "reliability": reliability}
+
+    def _load_cosine_simi_data(self, dotDens: float):
+
+        pairs = ("crds_ards", "crds_hmrds", "hmrds_ards")
+        conditions = ("crds", "hmrds", "ards")
+
+        alignment = {
+            pair: np.load(
+                Path(self.layer_act_dir)
+                / f"cosineSim_align_{pair}_dotDens_{dotDens:.2f}_bootstrap.npy"
+            )
+            for pair in pairs
+        }
+        reliability = {
+            condition: np.load(
+                Path(self.layer_act_dir)
+                / f"cosineSim_reliab_{condition}_dotDens_{dotDens:.2f}_bootstrap.npy"
+            )
+            for condition in conditions
+        }
+        if any(
+            value.ndim != 2 or value.shape[1] != len(self.layer_name)
+            for value in (*alignment.values(), *reliability.values())
+        ):
+            raise ValueError(
+                "Cosine similarity score arrays do not match the selected layers"
+            )
+
+        return alignment, reliability
+
+    @staticmethod
+    def _cosine_simi_summary(similarity_score):
+        """
+        Mean, split SD, valid count; undefined angles remain missing.
+        """
+
+        valid = np.isfinite(similarity_score)
+        count = valid.sum(axis=0)
+        total = np.where(valid, similarity_score, 0.0).sum(axis=0)
+        mean = np.divide(
+            total,
+            count,
+            out=np.full(similarity_score.shape[1], np.nan),
+            where=count > 0,
+        )
+        squared = np.where(valid, (similarity_score - mean) ** 2, 0.0).sum(axis=0)
+        variance = np.divide(
+            squared, count, out=np.full_like(mean, np.nan), where=count > 0
+        )
+        return mean, np.sqrt(variance), count
+
+    def plot_cosine_similarity(self, save_flag=True):
+        """
+        Plot one dotDens or all configured densities; bars are split SD.
+
+        Zero is orthogonality, NOT a statistical chance threshold. Missing
+        zero-norm axes are omitted and each panel reports its valid split count.
+        Reliability compares each condition's axes across disjoint subsets.
+        """
+
+        dotDens_list = list(self.dotDens_list)
+
+        sns.set_theme()
+        sns.set_theme(context="paper", style="white", font_scale=2, palette="deep")
+
+        n_row = len(dotDens_list)
+        n_col = 2
+        figsize = (8 * n_col, 4 * len(dotDens_list))
+        fig, axes = plt.subplots(
+            nrows=n_row,
+            ncols=n_col,
+            squeeze=False,
+            figsize=figsize,
+            sharex=True,
+            sharey=True,
+        )
+        fig.text(
+            0.5,
+            1.01,
+            f"Cosine Similarity ({self.model_name} / {self.binocular_interaction})",
+            ha="center",
+        )
+        fig.text(-0.05, 0.5, "Cosine similarity", va="center", rotation=90)
+        fig.text(0.5, -0.02, "Layer", ha="center")
+        fig.tight_layout()
+
+        plt.subplots_adjust(wspace=0.2, hspace=0.3)
+        colors = ["#6a5acd", "#00CED1", "#333333"]
+
+        x = np.arange(len(self.layer_name))
+        for row, dotDens in enumerate(dotDens_list):
+
+            # load cosine similarity data
+            alignment, reliability = self._load_cosine_simi_data(dotDens)
+            # dotDens = 0.1
+            # alignment, reliability = rdsl._load_cosine_simi_data(dotDens)
+
+            # plot alignment
+            valid_counts = []
+            for i, (pair, simi_score) in enumerate(alignment.items()):
+
+                mean, sd, valid_count = self._cosine_simi_summary(simi_score)
+
+                # pair = "crds_ards"
+                # simi_score = alignment[pair]
+                # mean, sd, valid_count = rdsl._cosine_simi_summary(simi_score)
+                valid_counts.extend(valid_count.tolist())
+
+                ## plot the one standard deviation for rds1 vs rds2
+                y = np.array(mean)
+                axes[row, 0].plot(
+                    x, y, linewidth=2, color=colors[i], label=pair.replace("_", " vs ")
+                )
+                axes[row, 0].plot(x, y, "o", markersize=8, color=colors[i])
+                axes[row, 0].fill_between(
+                    x,
+                    y - sd,
+                    y + sd,
+                    color=colors[i],
+                    alpha=0.2,
+                )
+                axes[row, 0].text(
+                    0.01,
+                    0.02,
+                    f"Valid splits/layer: {min(valid_counts)}–{max(valid_counts)}/{self.n_bootstrap}",
+                    transform=axes[row, 0].transAxes,
+                    fontsize=8,
+                )
+                axes[row, 0].legend(fontsize=10, frameon=False)
+
+                # plot midline
+                axes[row, 0].axhline(0.0, color="red", linestyle="--", linewidth=2)
+
+                # Hide the right and top spines
+                axes[row, 0].spines["right"].set_visible(False)
+                axes[row, 0].spines["top"].set_visible(False)
+
+                # Only show ticks on the left and bottom spines
+                axes[row, 0].yaxis.set_ticks_position("left")
+                axes[row, 0].xaxis.set_ticks_position("bottom")
+
+            # label x-axis
+            axes[row, 0].set_xticks(x)
+            axes[row, 0].set_xticklabels(x)
+
+            # title
+            axes[row, 0].set_title(f"Alignment: dot density {dotDens:.2f}")
+
+            # plot reliability
+            for i, (pair, simi_score) in enumerate(reliability.items()):
+
+                mean, sd, valid_count = self._cosine_simi_summary(simi_score)
+                # pair = "crds_ards"
+                # simi_score = alignment[pair]
+                # mean, sd, valid_count = rdsl._cosine_simi_summary(simi_score)
+                valid_counts.extend(valid_count.tolist())
+
+                ## plot the one standard deviation for rds1 vs rds2
+                y = np.array(mean)
+                axes[row, 1].plot(
+                    x, y, linewidth=2, color=colors[i], label=pair.replace("_", " vs ")
+                )
+                axes[row, 1].plot(x, y, "o", markersize=8, color=colors[i])
+                axes[row, 1].fill_between(
+                    x,
+                    y - sd,
+                    y + sd,
+                    color=colors[i],
+                    alpha=0.2,
+                )
+                axes[row, 1].text(
+                    0.01,
+                    0.02,
+                    f"Valid splits/layer: {min(valid_counts)}–{max(valid_counts)}/{self.n_bootstrap}",
+                    transform=axes[row, 1].transAxes,
+                    fontsize=8,
+                )
+                axes[row, 1].legend(fontsize=10, frameon=False)
+
+                # plot midline
+                axes[row, 1].axhline(0.0, color="red", linestyle="--", linewidth=2)
+
+                # Hide the right and top spines
+                axes[row, 1].spines["right"].set_visible(False)
+                axes[row, 1].spines["top"].set_visible(False)
+
+                # Only show ticks on the left and bottom spines
+                axes[row, 1].yaxis.set_ticks_position("left")
+                axes[row, 1].xaxis.set_ticks_position("bottom")
+
+            # label x-axis
+            axes[row, 1].set_xticks(x)
+            axes[row, 1].set_xticklabels(x)
+
+            # title
+            axes[row, 1].set_title(f"Reliability: dot density {dotDens:.2f}")
+
+        # fig.suptitle(f"{self.model_name}: near–far disparity axes")
+        self._save_plot(fig, f"plot_cosine_similarity_all.pdf", save_flag)
+        return fig
 
     def _split_groups(self, n_samples):
         """Keep shared generation trials AND inference batches in one fold.

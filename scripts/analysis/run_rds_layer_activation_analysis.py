@@ -7,15 +7,15 @@ def main():
     config = ConfigGCNet()
     config.load_state = True
     config.compile_mode = None
-    config.binocular_interaction = "bem"
+    config.binocular_interaction = "default"
     config.seed = config.experiment_id = 1618
-    config.epoch_to_load = 9
-    config.iter_to_load = 17100
+    config.epoch_to_load = 8
+    config.iter_to_load = 15400
     config.model_pretrained = f"epoch_{config.epoch_to_load}_iter_{config.iter_to_load}_model_best.pth.tar"  # pretrained file name, e.g: epoch_1_model.pth.tar
 
     config.n_rds_each_disp = 128
     config.batch_size_rds = 8
-    config.n_bootstrap = 100
+    config.n_bootstrap = 1000
     rdsl = RDS_LayerAct(config)
 
     # compute layer activation for all dot density
@@ -28,9 +28,14 @@ def main():
     #     rdsl.xDecode_layer_activation(dotDens, split_train, rdsl.n_bootstrap)
 
     # Cosine-similarity
-    split_train = 0.8
     for dotDens in rdsl.dotDens_list:
-        rdsl.compute_cosine_similarity(dotDens, split_train, rdsl.n_bootstrap)
+        result = rdsl.compute_cosine_similarity(
+            dotDens=dotDens,
+            split_train=0.8,
+            n_bootstrap=rdsl.n_bootstrap,
+        )
+
+    rdsl.plot_cosine_similarity(save_flag=True)
 
     # plot
     save_flag = 1
@@ -49,7 +54,7 @@ def main():
 if __name__ == "__main__":
     main()
 
-# %%
+# %% debugging
 # import numpy as np
 # from pathlib import Path
 # from RDS_analysis.rds_layer_activation_analysis import RDS_LayerAct
@@ -61,10 +66,10 @@ if __name__ == "__main__":
 # config = ConfigGCNet()
 # config.load_state = True
 # config.compile_mode = None
-# config.binocular_interaction = "bem"
+# config.binocular_interaction = "sum_diff"
 # config.seed = config.experiment_id = 1618
 # config.epoch_to_load = 9
-# config.iter_to_load = 17100
+# config.iter_to_load = 16800
 # config.model_pretrained = f"epoch_{config.epoch_to_load}_iter_{config.iter_to_load}_model_best.pth.tar"  # pretrained file name, e.g: epoch_1_model.pth.tar
 # config.n_rds_each_disp = 128
 # config.batch_size_rds = 8
@@ -164,7 +169,7 @@ if __name__ == "__main__":
 
 
 # layer_name = "layer19"
-# feat_crds = data["crds"][layer_name]
+# feat_crds = data["crds"][layer_name]  # [B, n_feat_channel * n_disp_channel]
 # feat_hmrds = data["hmrds"][layer_name]
 # feat_ards = data["ards"][layer_name]
 # label_crds = labels["crds"]
@@ -200,6 +205,19 @@ if __name__ == "__main__":
 #         random_state=split_seed,
 #     ).split(np.zeros(len(y)), y, groups)
 # )
+
+# splitter = GroupShuffleSplit(
+#     n_splits=n_bootstrap,
+#     train_size=split_train,
+#     random_state=split_seed,
+# )
+
+# a = splitter.split(np.zeros(len(y)), y, groups)
+# train_masks = np.zeros((n_bootstrap, len(y)), dtype=bool)
+# for repeat, (train, test) in enumerate(splitter.split(np.zeros(len(y)), y, groups)):
+#     if len(np.unique(y[train])) != 2 or len(np.unique(y[test])) != 2:
+#         raise ValueError("Both disparity signs must occur in each subset")
+#     train_masks[repeat, train] = True
 
 # # %% debug
 # import torch

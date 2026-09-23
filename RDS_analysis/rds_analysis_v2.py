@@ -1,6 +1,5 @@
 # %% load necessary modules
 import torch
-from torch import nn
 from torch.utils.data import DataLoader, ConcatDataset, SequentialSampler
 
 import numpy as np
@@ -25,7 +24,6 @@ from GC_Net.modules.gcnet import build_gcnet
 from config.config_bnn import ConfigBNN
 from config.config_gcnet import ConfigGCNet
 from utilities.misc import NestedTensor
-from utilities.output_hook import ModuleOutputsHook
 
 
 # %%
@@ -133,6 +131,7 @@ class RDSAnalysis(EngineBase):
         super().__init__(config)
 
         self.model_name = config.model_name
+        self.binocular_interaction = config.binocular_interaction
         self.config = config
 
         # rds parameters
