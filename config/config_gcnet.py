@@ -31,7 +31,7 @@ class ConfigGCNet(Config):
     # bino_interaction: default, batch size 4
     epoch_iter_to_load_default: list[tuple[int, int]] = field(
         default_factory=lambda: [
-            # (8, 15400),  # seed 1618
+            (8, 15400),  # seed 1618
             (9, 16000),  # seed 11364
             (9, 16500),  # seed 16476
             (9, 17000),  # seed 27829
@@ -50,7 +50,7 @@ class ConfigGCNet(Config):
     # bino_interaction: bem, batch size 4
     epoch_iter_to_load_bem: list[tuple[int, int]] = field(
         default_factory=lambda: [
-            # (9, 17100),  # seed 1618
+            (9, 17100),  # seed 1618
             (9, 17500),  # seed 11364
             (9, 16500),  # seed 16476
             (9, 17000),  # seed 27829
@@ -69,7 +69,7 @@ class ConfigGCNet(Config):
     # bino_interaction: cmm, batch size 4
     epoch_iter_to_load_cmm: list[tuple[int, int]] = field(
         default_factory=lambda: [
-            # (9, 17300),  # seed 1618
+            (9, 17300),  # seed 1618
             (9, 17500),  # seed 11364
             (8, 15500),  # seed 16476
             (9, 17500),  # seed 27829
@@ -88,7 +88,7 @@ class ConfigGCNet(Config):
     # bino_interaction: sum_diff, batch size 4
     epoch_iter_to_load_sum_diff: list[tuple[int, int]] = field(
         default_factory=lambda: [
-            # (9, 16800),  # seed 1618
+            (9, 16800),  # seed 1618
             (8, 14500),  # seed 11364
             (9, 16000),  # seed 16476
             (8, 15500),  # seed 27829

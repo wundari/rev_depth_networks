@@ -35,10 +35,10 @@ def main():
             n_bootstrap=rdsl.n_bootstrap,
         )
 
-    rdsl.plot_cosine_similarity(save_flag=True)
-
     # plot
-    save_flag = 1
+    save_flag = True
+
+    rdsl.plot_cosine_similarity(save_flag)
 
     # all dot density in one image
     rdsl.plotLine_xDecode_across_layers(save_flag)

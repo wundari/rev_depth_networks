@@ -111,15 +111,15 @@ class RDSBankDataset(ConcatDataset):
     """Conditions ordered by match, density, then the handler's disparity order."""
 
     def __init__(
-        self, datasets, dot_matches, dot_densities, samples_per_condition, bank_seed
+        self, datasets, dotMatch_list, dotDens_list, samples_per_condition, bank_seed
     ):
         super().__init__(datasets)
-        self.dot_matches = tuple(dot_matches)
-        self.dot_densities = tuple(dot_densities)
+        self.dotMatch_list = tuple(dotMatch_list)
+        self.dotDens_list = tuple(dotDens_list)
         self.bank_seed = bank_seed
         self.condition_shape = (
-            len(self.dot_matches),
-            len(self.dot_densities),
+            len(self.dotMatch_list),
+            len(self.dotDens_list),
             samples_per_condition,
         )
 
@@ -130,9 +130,14 @@ class RDSAnalysis(EngineBase):
 
         super().__init__(config)
 
+        self.config = config
         self.model_name = config.model_name
         self.binocular_interaction = config.binocular_interaction
-        self.config = config
+        self.dataset = config.dataset
+
+        self.seed = config.seed
+        self.epoch = config.epoch_to_load
+        self.iter = config.iter_to_load
 
         # rds parameters
         self.h_bg = config.img_height  # rds height
@@ -210,13 +215,71 @@ class RDSAnalysis(EngineBase):
         elif config.model_name == "GC_Net":
             return build_gcnet(config)
 
+    def update_network_config(
+        self, interaction: str, seed: int, epoch: int, iter: int
+    ) -> None:
+        """
+        Update the network configuration and directories for storing
+        the results
+        """
+
+        # old config, for printing purposes
+        interaction_old = self.binocular_interaction
+        seed_old = self.seed
+        epoch_old = self.epoch
+        iter_old = self.iter
+        # batch_size_rds_old = self.batch_size_rds
+
+        # update binocular_interaction, seed, epoch, iter, and model_pretrained in
+        # the class and config
+        self.binocular_interaction = interaction
+        self.config.binocular_interaction = interaction
+        self.seed = seed
+        self.config.seed = seed
+        self.config.experiment_id = seed
+        self.epoch = epoch
+        self.config.epoch_to_load = epoch
+        self.iter = iter
+        self.config.iter_to_load = iter
+        self.model_pretrained = f"epoch_{self.epoch}_iter_{self.iter}_model_best.pth.tar"  # pretrained file name, e.g: epoch_1_model.pth.tar
+        self.config.model_pretrained = self.model_pretrained
+
+        # update the experiment directories based on the new interaction
+        self.experiment_dir = (
+            f"{self.model_name}/run/{self.dataset}/"
+            + f"bino_interaction_{self.binocular_interaction}/"
+            + f"experiment_{self.seed}"
+        )
+
+        # update directory for storing plots of a given interaction
+        # (average across seeds)
+        self.plot_dir = f"{self.experiment_dir}/../plots"
+        if not os.path.exists(self.plot_dir):
+            os.makedirs(self.plot_dir)
+
+        # update folders for rds analysis
+        self.make_rds_dirs()
+
+        print(
+            "==============================================================\n"
+            + f"Updating {self.model_name} config:\n"
+            + "==============================================================\n"
+            + f"Binocular interaction: {interaction_old} => {self.config.binocular_interaction}\n"
+            + f"Seed: {seed_old} => {self.config.seed}\n"
+            + f"Epoch: {epoch_old} => {self.config.epoch_to_load}\n"
+            + f"Iter: {iter_old} => {self.config.iter_to_load}\n"
+            + f"Experiment directory: {self.experiment_dir}\n"
+            + f"RDS directory: {self.rds_dir}\n"
+            + f"Cross-decoding directory: {self.xDecode_dir}\n"
+            + "==============================================================\n"
+        )
+
     def create_rds_bank(
         self,
         background_flag: bool,
         pedestal_flag: bool,
-        *,
         bank_seed: int = 3407,
-        n_jobs: int = 8,
+        n_jobs: int = 16,
         loader_workers: int = 4,
     ):
         """Generate a reusable, deterministic RDS bank.
@@ -242,13 +305,13 @@ class RDSAnalysis(EngineBase):
             density, disparity, then trial.
         """
 
-        dot_matches = tuple(float(value) for value in self.dotMatch_list)
-        dot_densities = tuple(float(value) for value in self.dotDens_list)
-        if not dot_matches or not dot_densities:
+        dotMatch_list = tuple(float(value) for value in self.dotMatch_list)
+        dotDens_list = tuple(float(value) for value in self.dotDens_list)
+        if not dotMatch_list or not dotDens_list:
             raise ValueError("dotMatch_list and dotDens_list must be non-empty")
-        if len(set(dot_matches)) != len(dot_matches):
+        if len(set(dotMatch_list)) != len(dotMatch_list):
             raise ValueError("dotMatch_list contains duplicate conditions")
-        if len(set(dot_densities)) != len(dot_densities):
+        if len(set(dotDens_list)) != len(dotDens_list):
             raise ValueError("dotDens_list contains duplicate conditions")
         if self.n_rds_each_disp <= 0:
             raise ValueError("n_rds_each_disp must be positive")
@@ -261,7 +324,9 @@ class RDSAnalysis(EngineBase):
 
         n_samples = len(self.disp_ct_pix_list) * self.n_rds_each_disp
         conditions = [
-            (dotMatch, dotDens) for dotMatch in dot_matches for dotDens in dot_densities
+            (dotMatch, dotDens)
+            for dotMatch in dotMatch_list
+            for dotDens in dotDens_list
         ]
 
         # Derive seeds from condition values instead of condition indices. Thus,
@@ -324,7 +389,7 @@ class RDSAnalysis(EngineBase):
                 )
 
         dataset = RDSBankDataset(
-            datasets, dot_matches, dot_densities, n_samples, bank_seed
+            datasets, dotMatch_list, dotDens_list, n_samples, bank_seed
         )
         loader_options = {
             "dataset": dataset,
@@ -760,7 +825,7 @@ class RDSAnalysis(EngineBase):
         plt.close(fig)
         gc.collect()
 
-    def plotLine_xDecode_avg_seed(self, dataset_name, save_flag):
+    def plotLine_xDecode_avg_seed(self, dataset_name: str, save_flag: bool = True):
         """
         Average cross-decoding performance across seed numbers and plot it.
 

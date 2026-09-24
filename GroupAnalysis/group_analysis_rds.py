@@ -42,65 +42,6 @@ class GA_RDS(RDSAnalysis):
         self.__getconfig__()
         self.__getconfig_rds___()
 
-    def update_network_config(
-        self, interaction: str, seed: int, epoch: int, iter: int
-    ) -> None:
-        """
-        Update the network configuration and directories for storing
-        the results
-        """
-
-        # old config, for printing purposes
-        interaction_old = self.binocular_interaction
-        seed_old = self.seed
-        epoch_old = self.epoch
-        iter_old = self.iter
-        batch_size_rds_old = self.batch_size_rds
-
-        # update binocular_interaction, seed, epoch, iter, and model_pretrained in
-        # the class and config
-        self.binocular_interaction = interaction
-        self.config.binocular_interaction = interaction
-        self.seed = seed
-        self.config.seed = seed
-        self.config.experiment_id = seed
-        self.epoch = epoch
-        self.config.epoch_to_load = epoch
-        self.iter = iter
-        self.config.iter_to_load = iter
-        self.model_pretrained = f"epoch_{self.epoch}_iter_{self.iter}_model_best.pth.tar"  # pretrained file name, e.g: epoch_1_model.pth.tar
-        self.config.model_pretrained = self.model_pretrained
-
-        # update the experiment directories based on the new interaction
-        self.experiment_dir = (
-            f"{self.model_name}/run/{self.dataset}/"
-            + f"bino_interaction_{self.binocular_interaction}/"
-            + f"experiment_{self.seed}"
-        )
-
-        # update directory for storing plots of a given interaction
-        # (average across seeds)
-        self.plot_dir = f"{self.experiment_dir}/../plots"
-        if not os.path.exists(self.plot_dir):
-            os.makedirs(self.plot_dir)
-
-        # update folders for rds analysis
-        self.make_rds_dirs()
-
-        print(
-            "==============================================================\n"
-            + f"Updating {self.model_name} config:\n"
-            + "==============================================================\n"
-            + f"Binocular interaction: {interaction_old} => {self.config.binocular_interaction}\n"
-            + f"Seed: {seed_old} => {self.config.seed}\n"
-            + f"Epoch: {epoch_old} => {self.config.epoch_to_load}\n"
-            + f"Iter: {iter_old} => {self.config.iter_to_load}\n"
-            + f"Experiment directory: {self.experiment_dir}\n"
-            + f"RDS directory: {self.rds_dir}\n"
-            + f"Cross-decoding directory: {self.xDecode_dir}\n"
-            + "==============================================================\n"
-        )
-
     def compute_disp_map_all_seeds(
         self, rds_bank: DataLoader, interaction: str, n_bootstrap: int = 1000
     ) -> None:
