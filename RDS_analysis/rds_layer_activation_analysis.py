@@ -15,8 +15,6 @@ from utilities.utils import *
 from utilities.misc import NestedTensor
 
 import os
-import hashlib
-import json
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -119,6 +117,41 @@ class RDS_LayerAct(RDSAnalysis):
 
         self._create_layer_act_dir()
 
+    def _load_pretrained_model(self) -> None:
+        super()._load_pretrained_model()
+        self._refresh_layer_targets()
+
+    def _refresh_layer_targets(self) -> None:
+        """
+        Bind layer names to modules belonging to the current model instance.
+        """
+
+        model = getattr(self.model, "_orig_mod", self.model)
+        if self.model_name == "BNN":
+            self.layer_name = ["encoder1", "encoder2", "layer3", "layer4"]
+            self.target_list = [
+                model.encoder.in_conv[0],
+                model.encoder.layer2[0],
+                model.decoder.layer3[0],
+                model.decoder.layer4,
+            ]
+        elif self.model_name == "GC_Net":
+            self.layer_name = [
+                *(f"layer{i}" for i in range(19, 33)),
+                *(f"layer{i}a" for i in range(33, 37)),
+                "layer37",
+            ]
+            self.target_list = [
+                (
+                    getattr(model.decoder, name)[0]
+                    if name != "layer37"
+                    else model.decoder.layer37
+                )
+                for name in self.layer_name
+            ]
+        else:
+            raise ValueError(f"Unsupported model for layer analysis: {self.model_name}")
+
     def _create_layer_act_dir(self):
 
         # create folders for layer activations
@@ -186,7 +219,7 @@ class RDS_LayerAct(RDSAnalysis):
             + f"Iter: {iter_old} => {self.config.iter_to_load}\n"
             + f"Experiment directory: {self.experiment_dir}\n"
             + f"RDS directory: {self.rds_dir}\n"
-            + f"Cosine-similarity directory: {self.layer_act_dir}\n"
+            + f"Layer activation directory: {self.layer_act_dir}\n"
             + "==============================================================\n"
         )
 
@@ -207,7 +240,8 @@ class RDS_LayerAct(RDSAnalysis):
         return disp_indices
 
     def _pool_activation(self, value):
-        """Spatial pooling only, followed by flattening into probe features.
+        """
+        Spatial pooling only, followed by flattening into probe features.
 
         5D: [B,C,D,H,W] -> [B, C, D, h_pool, w_pool] -> [B, C*D*h_pool*w_pool]
         4D: [B,C,H,W]   -> [B, C, h_pool, w_pool]   -> [B, C*h_pool*w_pool]
@@ -303,7 +337,7 @@ class RDS_LayerAct(RDSAnalysis):
             for module, calls in outputs.items():
                 if not calls:
                     raise RuntimeError(
-                        "A selected hook did not fire; rebuild targets after changing models"
+                        "A selected hook did not fire; refresh target_list after changing models"
                     )
                 result[module] = torch.cat(calls, dim=1) if len(calls) > 1 else calls[0]
                 # result[module] = calls[0]
@@ -475,20 +509,6 @@ class RDS_LayerAct(RDSAnalysis):
             reference=1,
         )
 
-        # Keep fixed-reference bank outputs separate from legacy label-based swaps.
-        if not hasattr(self, "_bank_output_root"):
-            self._bank_output_root = Path(self.layer_act_dir)
-        digest = hashlib.sha256(
-            json.dumps(
-                self._metadata(),
-                sort_keys=True,
-                default=str,
-            ).encode()
-        ).hexdigest()[:16]
-
-        self.layer_act_dir = str(self._bank_output_root / f"rds_bank_{digest}")
-        Path(self.layer_act_dir).mkdir(parents=True, exist_ok=True)
-
         return conditions, n_samples_per_cond
 
     def _metadata(self):
@@ -500,7 +520,7 @@ class RDS_LayerAct(RDSAnalysis):
             bank_seed=self.rds_bank_seed,
             background=self.background_flag,
             pedestal=self.pedestal_flag,
-            batch_size=self.batch_size_rds,
+            batch_size_rds=self.batch_size_rds,
             amp_dtype=self.config.amp_dtype,
             disparities=list(self.disp_ct_pix_list),
             samples_per_disparity=self.n_rds_each_disp,
@@ -603,8 +623,7 @@ class RDS_LayerAct(RDSAnalysis):
         disp_labels = np.empty(n_samples_per_cond, dtype=np.int8)
         total = len(rds_bank.dataset)
         features = {}
-        # features = None
-        paths = {}
+        # paths = {}
 
         # iterate through the data and compute activations
         tepoch = tqdm(
@@ -691,11 +710,13 @@ class RDS_LayerAct(RDSAnalysis):
                 path = Path(self.layer_act_dir) / ("act_rds_" + suffix)
                 features["_metadata"] = self._metadata()
 
+                print(
+                    f"Saving layer activation: dotMatch: {dotMatch}, dotDens: {dotDens}"
+                )
                 np.save(path, features)
                 np.save(
                     Path(self.layer_act_dir) / ("targetDisp_rds_" + suffix), disp_labels
                 )
-                paths[(dotMatch, dotDens)] = path
 
                 # reset buffer and counter
                 features = {}
@@ -1472,7 +1493,8 @@ class RDS_LayerAct(RDSAnalysis):
         fig.text(
             0.5,
             1.01,
-            f"Cosine Similarity ({self.model_name} / {self.binocular_interaction})",
+            f"Average Cosine Similarity across all seeds\n"
+            f"({self.model_name} / {self.binocular_interaction})",
             ha="center",
         )
         fig.text(-0.05, 0.5, "Cosine similarity", va="center", rotation=90)
@@ -1489,8 +1511,8 @@ class RDS_LayerAct(RDSAnalysis):
             for i, (pair, simi_score) in enumerate(alignment_avg.items()):
 
                 ## plot the sem for rds1 vs rds2
-                y = np.array(simi_score)
-                y_sem = np.array(alignment_sem[pair])
+                y = np.array(simi_score)[row]
+                y_sem = np.array(alignment_sem[pair])[row]
                 axes[row, 0].plot(
                     x, y, linewidth=2, color=colors[i], label=pair.replace("_", " vs ")
                 )
@@ -1520,6 +1542,9 @@ class RDS_LayerAct(RDSAnalysis):
             axes[row, 0].set_xticks(x)
             axes[row, 0].set_xticklabels(x)
 
+            # ylim
+            axes[row, 0].set_ylim(-1, 1)
+
             # title
             axes[row, 0].set_title(f"Alignment: dot density {dotDens:.2f}")
 
@@ -1527,8 +1552,8 @@ class RDS_LayerAct(RDSAnalysis):
             for i, (cond, reli_score) in enumerate(reliability_avg.items()):
 
                 ## plot the sem for rds1 vs rds2
-                y = np.array(reli_score)
-                y_sem = np.array(reliability_sem[cond])
+                y = np.array(reli_score)[row]
+                y_sem = np.array(reliability_sem[cond])[row]
                 axes[row, 1].plot(x, y, linewidth=2, color=colors[i], label=cond)
                 axes[row, 1].plot(x, y, "o", markersize=8, color=colors[i])
                 axes[row, 1].fill_between(
@@ -1556,13 +1581,19 @@ class RDS_LayerAct(RDSAnalysis):
             axes[row, 1].set_xticks(x)
             axes[row, 1].set_xticklabels(x)
 
+            # ylim
+            axes[row, 1].set_ylim(-1, 1)
+
             # title
             axes[row, 1].set_title(f"Reliability: dot density {dotDens:.2f}")
 
         # fig.suptitle(f"{self.model_name}: near–far disparity axes")
-        self._save_plot(
-            fig, f"plot_cosine_similarity_avg_seeds_{interaction}.pdf", save_flag
-        )
+        if save_flag:
+            plt.savefig(
+                f"{self.plot_dir}/plot_cosine_similarity_avg_seeds_{interaction}.pdf",
+                dpi=600,
+                bbox_inches="tight",
+            )
 
     def _split_groups(self, n_samples_per_cond: int):
         """Keep shared generation trials AND inference batches in one fold.

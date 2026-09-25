@@ -14,13 +14,8 @@ def main():
         rdsl.pedestal_flag,
     )
 
-    # rdsl._configure_activation_bank(
-    #     rds_bank, background_flag=rdsl.background_flag, pedestal_flag=rdsl.pedestal_flag
-    # )
-
-    # compute cosine-similarity
-    # interactions = rdsl.config.interactions
-    interactions = ["bem"]
+    interactions = rdsl.config.interactions
+    # interactions = ["cmm", "default", "sum_diff"]
     save_flag = True
 
     for interaction in interactions:

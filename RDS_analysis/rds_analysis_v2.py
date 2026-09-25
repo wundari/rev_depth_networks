@@ -282,7 +282,30 @@ class RDSAnalysis(EngineBase):
         n_jobs: int = 16,
         loader_workers: int = 4,
     ):
-        """Generate a reusable, deterministic RDS bank.
+        """
+        Generate a bank of RDS images that store all rds types for all dotMatch and dotDens.
+
+        RDS bank structure:
+        [dotMatch dotDens disp_magnitude n_rds_each_disp]
+
+        For example:
+        [0.0 0.1 10 rds_1
+                    rds_2
+                    .
+                    .
+                    .rds_(n_rds_each_disp)
+                -10 rds_1
+                    rds_2
+                    .
+                    .
+                    .rds_(n_rds_each_disp)
+         0.0 0.2 10 rds_1
+                    rds_2
+                    .
+                    .
+                    .]
+
+        For each rds_cond (each dotMatch and dotDens), there are len(disp_ct_pix_list) * n_rds_each_disp
 
         Args:
             dotMatch_list: Dot-match levels, for example [0.0, 0.5, 1.0].
