@@ -29,7 +29,7 @@ def main():
 
     # Cosine-similarity
     for dotDens in rdsl.dotDens_list:
-        result = rdsl.compute_cosine_similarity(
+        result = rdsl.compute_cosine_similarity_layers(
             dotDens=dotDens,
             split_train=0.8,
             n_bootstrap=rdsl.n_bootstrap,

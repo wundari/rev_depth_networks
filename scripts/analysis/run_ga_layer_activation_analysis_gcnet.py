@@ -8,11 +8,11 @@ def main():
     config = ConfigGCNet()
     rdsl = RDS_LayerAct(config)
 
-    # generate RDS dataloader
-    rds_bank = rdsl.create_rds_bank(
-        rdsl.background_flag,
-        rdsl.pedestal_flag,
-    )
+    # # generate RDS dataloader
+    # rds_bank = rdsl.create_rds_bank(
+    #     rdsl.background_flag,
+    #     rdsl.pedestal_flag,
+    # )
 
     interactions = rdsl.config.interactions
     # interactions = ["cmm", "default", "sum_diff"]
@@ -38,23 +38,32 @@ def main():
             rdsl.model.to(rdsl.device)
 
             # compute layer activation for all dot density
-            rdsl.compute_layer_act_rds(
-                rds_bank, rdsl.background_flag, rdsl.pedestal_flag
-            )
+            # rdsl.compute_layer_act_rds(
+            #     rds_bank, rdsl.background_flag, rdsl.pedestal_flag
+            # )
 
             # Cosine-similarity
-            for dotDens in rdsl.dotDens_list:
-                result = rdsl.compute_cosine_similarity(
-                    dotDens=dotDens,
-                    split_train=0.8,
-                    n_bootstrap=rdsl.n_bootstrap,
-                )
+            # for dotDens in rdsl.dotDens_list:
+            #     result = rdsl.compute_cosine_similarity_layers(
+            #         dotDens=dotDens,
+            #         split_train=0.8,
+            #         n_bootstrap=rdsl.n_bootstrap,
+            #     )
 
             # plot cosine similarity
-            rdsl.plot_cosine_similarity(save_flag)
+            # rdsl.plot_cosine_similarity(save_flag)
+
+            # Cross-decoding
+            rdsl.compute_xDecode_layers(split_train=0.8)
+
+            # plot cross-decoding
+            rdsl.plotLine_xDecode_across_layers(save_flag)
 
         # plot cosine similarity averaged across all seeds
-        rdsl.plot_cosine_similarity_all_seeds(interaction, save_flag)
+        # rdsl.plot_cosine_similarity_all_seeds(interaction, save_flag)
+
+        # plot cross-decoding averaged across all seeds
+        rdsl.plotLine_xDecode_all_seeds(interaction, save_flag)
 
 
 # %%

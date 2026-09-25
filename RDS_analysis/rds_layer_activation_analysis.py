@@ -535,8 +535,8 @@ class RDS_LayerAct(RDSAnalysis):
         pedestal_flag: bool = False,
     ) -> None:
         """
-        compute the layer activations in response to RDSs for a given dot match
-        and dot density.
+        compute the layer activations in response to RDSs for all dot matches
+        and dot densities. All types of RDSs are stored in rds_bank.
 
         Args:
             dotMatch (float): dot match level; between 0 (ards) to 1 (crds)
@@ -544,13 +544,6 @@ class RDS_LayerAct(RDSAnalysis):
             background_flag ([binary 1/0]): a binary flag indicating
                     whether the RDS is surrounded by cRDS background (1) or not (0)
         """
-
-        # BNN layer dimensions
-        # | Layer(s)            | Shape                     |
-        # | encoder.in_conv[0]  | [B, 32, 128, 256) — 4D [B, feat_channel, h, w]
-        # | encoder.layer2[0]   | [B, 32, 128, 256) — 4D [B, feat_channel, h, w]
-        # | decoder.layer3[0]   | [B, 32, 96, 128, 256) — 5D [B, feat_channel, disp_channel, h, w]
-        # | decoder.layer4	    | [B, 1, 192, 256, 512) — 5D [B, feat_channel, disp_channel, h, w]
 
         # GCNet layer dimensions
         # | Layer(s)             | Shape [B, feat_channel, disp_channel, h, w] |
@@ -769,26 +762,6 @@ class RDS_LayerAct(RDSAnalysis):
         #     disp_labels,
         # )
 
-    def compute_layer_act_rds_all(self, background_flag: bool) -> None:
-        """
-        compute layer activation for every rds types and dot density
-        """
-
-        for dotDens in self.dotDens_list:
-            for dotMatch in self.dotMatch_list:
-
-                print(
-                    f"compute layer activation for RDS: "
-                    + f"dotDens {dotDens:.2f}, "
-                    + f"dotMatch {dotMatch:.2f}"
-                )
-                # compute layer activation for rds
-                self.compute_layer_act_rds(dotMatch, dotDens, background_flag)
-
-    def compute_layer_act_all_seeds(self, rds_bank: DataLoader):
-
-        pass
-
     # def xDecode_layer_activation(
     #     self,
     #     dotDens: float,
@@ -985,7 +958,7 @@ class RDS_LayerAct(RDSAnalysis):
         far = (mask & mask_far) / mask_far.sum(axis=1, keepdims=True)
         return near - far
 
-    def compute_cosine_similarity(
+    def compute_cosine_similarity_layers(
         self,
         dotDens: float,
         split_train: float,
@@ -1587,7 +1560,6 @@ class RDS_LayerAct(RDSAnalysis):
             # title
             axes[row, 1].set_title(f"Reliability: dot density {dotDens:.2f}")
 
-        # fig.suptitle(f"{self.model_name}: near–far disparity axes")
         if save_flag:
             plt.savefig(
                 f"{self.plot_dir}/plot_cosine_similarity_avg_seeds_{interaction}.pdf",
@@ -1617,7 +1589,7 @@ class RDS_LayerAct(RDSAnalysis):
             join(i, i % self.n_rds_each_disp)
         return np.array([root(i) for i in range(n_samples_per_cond)])
 
-    def xDecode_layer_activation(
+    def _xDecode(
         self,
         dotDens: float,
         split_train: float,
@@ -1630,8 +1602,10 @@ class RDS_LayerAct(RDSAnalysis):
         Standardization is fitted only on cRDS training features. Test indices
         are shared across conditions and layers; no tuning on aRDS scores.
         """
+
         if not 0 < split_train < 1 or n_bootstrap < 1 or C <= 0:
             raise ValueError("Require 0 < split_train < 1, positive repeats and C")
+
         data, labels = {}, {}
         for condition, match in (("ards", 0.0), ("hmrds", 0.5), ("crds", 1.0)):
             suffix = f"_dotDens_{dotDens:.2f}_dotMatch_{match:.2f}.npy"
@@ -1646,6 +1620,7 @@ class RDS_LayerAct(RDSAnalysis):
             labels[condition] = np.load(
                 Path(self.layer_act_dir) / ("targetDisp_rds" + suffix)
             )
+
         y = labels["crds"]
         expected = np.repeat(self.disp_ct_pix_list, self.n_rds_each_disp)
         if not np.array_equal(y, expected) or len(np.unique(y)) != 2:
@@ -1667,6 +1642,7 @@ class RDS_LayerAct(RDSAnalysis):
                 random_state=split_seed,
             ).split(np.zeros(len(y)), y, groups)
         )
+
         for train, test in splits:
             if len(np.unique(y[train])) != 2 or len(np.unique(y[test])) != 2:
                 raise ValueError("Both disparity classes must occur in each fold")
@@ -1688,7 +1664,9 @@ class RDS_LayerAct(RDSAnalysis):
             for repeat, (train, test) in enumerate(splits):
                 # train-only, per-feature scaling, including constant
                 # features (StandardScaler handles zero variance safely).
-                classifier = make_pipeline(StandardScaler(), SVC(kernel="linear", C=C))
+                classifier = make_pipeline(
+                    StandardScaler(), SVC(kernel="linear", C=C, cache_size=4000)
+                )
                 classifier.fit(x["crds"][train], y[train])
                 for condition in scores:
                     scores[condition][repeat, layer_index] = classifier.score(
@@ -1718,35 +1696,52 @@ class RDS_LayerAct(RDSAnalysis):
             split_train=split_train,
             C=C,
         )
-        return scores
+        # return scores
 
-    def _load_scores(self, density):
-        scores = {
-            condition: np.load(
-                Path(self.layer_act_dir)
-                / f"xDecode_score_{condition}_dotDens_{density:.2f}_bootstrap.npy"
+    def compute_xDecode_layers(self, split_train: float):
+
+        for dotDens in self.dotDens_list:
+            self._xDecode(
+                dotDens,
+                split_train,
+                self.n_bootstrap,
             )
-            for condition in ("ards", "hmrds", "crds")
+
+    def _load_scores(self, dotDens):
+
+        # scores = {rds_cond: np.empty((n_bootstrap, len(self.layer_name))}
+        # rds_cond: "ards", "hmrds", "crds"
+        scores = {
+            rds_cond: np.load(
+                Path(self.layer_act_dir)
+                / f"xDecode_score_{rds_cond}_dotDens_{dotDens:.2f}_bootstrap.npy"
+            )
+            for rds_cond in ("ards", "hmrds", "crds")
         }
         if any(
             value.ndim != 2 or value.shape[1] != len(self.layer_name)
             for value in scores.values()
         ):
             raise ValueError("Score arrays do not match the selected layers")
+
         return scores
 
-    def _plot_density(self, ax, density):
+    def _plot_density(self, ax, dotDens):
+
         x = np.arange(len(self.layer_name))
         ax.axhline(0.5, color="black", linestyle="--", label="Chance")
-        for condition, score in self._load_scores(density).items():
+
+        for condition, score in self._load_scores(dotDens).items():
             ax.errorbar(x, score.mean(0), yerr=score.std(0), label=condition)
+
         ax.set(
-            title=f"Dot density {density:.2f}",
+            title=f"Dot density {dotDens:.2f}",
             ylim=(0, 1),
             xticks=x,
             xticklabels=self.layer_name,
             ylabel="Accuracy",
         )
+
         ax.tick_params(axis="x", labelrotation=90)
 
     def _save_plot(self, fig, filename, save_flag):
@@ -1764,7 +1759,7 @@ class RDS_LayerAct(RDSAnalysis):
         return fig
 
     def plotLine_xDecode_across_layers(self, save_flag):
-        # LAYER FIX: dynamic density count and layer labels, including BNN.
+
         n = len(self.dotDens_list)
         if n == 0:
             raise ValueError("No dot densities configured")
@@ -1783,9 +1778,153 @@ class RDS_LayerAct(RDSAnalysis):
             else:
                 ax.set_visible(False)
         axes.flat[0].legend()
-        fig.suptitle(f"{self.model_name}: cRDS-trained probes (bars: split SD)")
+        fig.suptitle(f"{self.model_name}: cRDS-trained probes")
         self._save_plot(fig, "plotLine_xDecode.pdf", save_flag)
         return fig
+
+    def _load_xDecode_scores_all_seeds(self, interaction: str):
+
+        dotDens_list = self.dotDens_list
+        conditions = ["ards", "hmrds", "crds"]
+
+        # allocate buffer
+        score_seeds = {
+            rds_cond: np.empty(
+                (
+                    len(self.config.seed_to_analyse),
+                    len(dotDens_list),
+                    len(self.layer_name),
+                ),
+                dtype=np.float32,
+            )
+            for rds_cond in conditions
+        }
+
+        for s, seed in enumerate(self.config.seed_to_analyse):
+
+            if interaction == "default":
+                epoch, iter = self.config.epoch_iter_to_load_default[s]
+            elif interaction == "bem":
+                epoch, iter = self.config.epoch_iter_to_load_bem[s]
+            elif interaction == "cmm":
+                epoch, iter = self.config.epoch_iter_to_load_cmm[s]
+            else:  # sum_diff
+                epoch, iter = self.config.epoch_iter_to_load_sum_diff[s]
+
+                # update network configuration and directory addresses
+                self.update_network_config(interaction, seed, epoch, iter)
+
+            for dd, dotDens in enumerate(dotDens_list):
+
+                # load xDecode scores
+                # dotDens = 0.1
+                # scores = {rds_cond: np.empty((n_bootstrap, len(self.layer_name))}
+                # rds_cond: "ards", "hmrds", "crds"
+                score = self._load_scores(dotDens)
+
+                # average across bootstrap
+                score_avg = {
+                    rds_cond: score[rds_cond].mean(axis=0) for rds_cond in conditions
+                }
+
+                # store to buffer
+                for rds_cond in conditions:
+                    score_seeds[rds_cond][s][dd] = score_avg[rds_cond]
+
+        return score_seeds
+
+    def plotLine_xDecode_all_seeds(self, interaction: str, save_flag: bool):
+
+        # load xDecode scores all seeds
+        # score_seeds = {rds_cond: np.empty((len(seed_to_analyse), len(dotDens_list), len(self.layer_name))}
+        # rds_cond: "ards", "hmrds", "crds"
+        score_seeds = self._load_xDecode_scores_all_seeds(interaction)
+
+        # average across seeds
+
+        sns.set_theme()
+        sns.set_theme(context="paper", style="white", font_scale=2, palette="deep")
+
+        n_row = len(dotDens_list)
+        n_col = 1
+        figsize = (8 * n_col, 4 * len(dotDens_list))
+        fig, axes = plt.subplots(
+            nrows=n_row,
+            ncols=n_col,
+            squeeze=False,
+            figsize=figsize,
+            sharex=True,
+            sharey=True,
+        )
+        fig.text(
+            0.5,
+            1.01,
+            f"Average Cross-decoding across all seeds (train: cRDS, test: hmRDS and aRDS)\n"
+            f"({self.model_name} / {self.binocular_interaction})",
+            ha="center",
+        )
+        fig.text(-0.05, 0.5, "Prediction accuracy", va="center", rotation=90)
+        fig.text(0.5, -0.02, "Layer", ha="center")
+        fig.tight_layout()
+
+        plt.subplots_adjust(wspace=0.2, hspace=0.3)
+        colors = ["#6a5acd", "#00CED1", "#333333"]
+
+        x = np.arange(len(self.layer_name))
+        for row, dotDens in enumerate(dotDens_list):
+
+            # plot xDecode scores
+            for i, (pair, score) in enumerate(score_seeds.items()):
+
+                ## plot the sem for rds1 vs rds2
+                y = np.array(score[:, row])
+                y_mean = y.mean(axis=0)
+                y_sem = sem(y, axis=0)
+                axes[row, 0].plot(
+                    x,
+                    y_mean,
+                    linewidth=2,
+                    color=colors[i],
+                    label=pair.replace("_", " vs "),
+                )
+                axes[row, 0].plot(x, y_mean, "o", markersize=8, color=colors[i])
+                axes[row, 0].fill_between(
+                    x,
+                    y_mean - y_sem,
+                    y_mean + y_sem,
+                    color=colors[i],
+                    alpha=0.2,
+                )
+
+                axes[row, 0].legend(fontsize=10, frameon=False)
+
+                # plot midline
+                axes[row, 0].axhline(0.5, color="red", linestyle="--", linewidth=2)
+
+                # Hide the right and top spines
+                axes[row, 0].spines["right"].set_visible(False)
+                axes[row, 0].spines["top"].set_visible(False)
+
+                # Only show ticks on the left and bottom spines
+                axes[row, 0].yaxis.set_ticks_position("left")
+                axes[row, 0].xaxis.set_ticks_position("bottom")
+
+            # label x-axis
+            axes[row, 0].set_xticks(x)
+            axes[row, 0].set_xticklabels(x)
+
+            # ylim
+            axes[row, 0].set_ylim(0, 1)
+
+            # title
+            axes[row, 0].set_title(f"Dot density {dotDens:.2f}")
+
+        if save_flag:
+            plt.savefig(
+                f"{self.plot_dir}/plot_xDecode_avg_seeds_{interaction}.pdf",
+                dpi=600,
+                bbox_inches="tight",
+            )
 
     def plotHeat_xDecode(self, save_flag):
         fig, axes = plt.subplots(1, 3, figsize=(16, 8), constrained_layout=True)
