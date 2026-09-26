@@ -20,6 +20,8 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from pathlib import Path
 from tqdm import tqdm
+from dataclasses import dataclass
+from joblib import Parallel, delayed, parallel_config
 from sklearnex import patch_sklearn
 
 patch_sklearn(verbose=False)
@@ -33,6 +35,39 @@ from jaxtyping import Float, Bool
 from config.config_bnn import ConfigBNN
 from config.config_gcnet import ConfigGCNet
 
+# %%
+
+
+@dataclass(frozen=True)
+class _XDecodeState:
+    """Only the CPU settings required by one cross-decoding process.
+
+    In particular, do not send the analysis object: it owns a GPU model.
+    """
+
+    layer_act_dir: str
+    activation_metadata: dict
+    layer_name: list[str]
+    disp_ct_pix_list: list[int]
+    n_rds_each_disp: int
+    batch_size_rds: int
+
+    def _metadata(self):
+        return self.activation_metadata
+
+    def _split_groups(self, n_samples_per_cond):
+        return RDS_LayerAct._split_groups(self, n_samples_per_cond)
+
+
+def _xdecode_density_process(state, dot_density, split_train, n_bootstrap_xDecode):
+    """Run existing decoding logic in a worker without copying the model."""
+    return RDS_LayerAct._xDecode(
+        state,
+        dot_density,
+        split_train,
+        n_bootstrap_xDecode,
+    )
+
 
 # %%
 class RDS_LayerAct(RDSAnalysis):
@@ -45,6 +80,29 @@ class RDS_LayerAct(RDSAnalysis):
         self.pool_shape = tuple(
             (1, 1)
         )  # spatial average across [h, w] in each DNN layer
+
+        # [feat_channel, disp_channel]
+        self.layer_shapes = {
+            "layer19": [32, 96],
+            "layer20": [32, 96],
+            "layer21": [64, 48],
+            "layer22": [64, 48],
+            "layer23": [64, 48],
+            "layer24": [64, 24],
+            "layer25": [64, 24],
+            "layer26": [64, 24],
+            "layer27": [64, 12],
+            "layer28": [64, 12],
+            "layer29": [64, 12],
+            "layer30": [128, 6],
+            "layer31": [128, 6],
+            "layer32": [128, 6],
+            "layer33a": [64, 12],
+            "layer34a": [64, 24],
+            "layer35a": [64, 48],
+            "layer36a": [32, 96],
+            "layer37": [1, 192],
+        }
 
         # BNN layer dimensions
         # | Layer(s)            | Shape                     |
@@ -160,6 +218,30 @@ class RDS_LayerAct(RDSAnalysis):
         )
         if not os.path.exists(self.layer_act_dir):
             os.makedirs(self.layer_act_dir)
+
+    # load layer activation
+    def _load_layer_activation(self, dotDens: float):
+
+        # data = {rds_cond: {layer_name: [n_samples, n_feat_channels * n_disp_channels]}
+        # labels = {rds_cond: [n_samples]}
+        # rds_cond: "ards", "hmrds", "crds"
+
+        data, labels = {}, {}
+        for rds_cond, dotMatch in (("ards", 0.0), ("hmrds", 0.5), ("crds", 1.0)):
+            suffix = f"_dotDens_{dotDens:.2f}_dotMatch_{dotMatch:.2f}.npy"
+            data[rds_cond] = np.load(
+                Path(self.layer_act_dir) / ("act_rds" + suffix),
+                allow_pickle=True,
+            ).item()
+            if data[rds_cond].get("_metadata") != self._metadata():
+                raise ValueError(
+                    "Legacy or incompatible activation files; regenerate all conditions"
+                )
+            labels[rds_cond] = np.load(
+                Path(self.layer_act_dir) / ("targetDisp_rds" + suffix)
+            )
+
+        return data, labels
 
     def update_network_config(
         self, interaction: str, seed: int, epoch: int, iter: int
@@ -742,7 +824,7 @@ class RDS_LayerAct(RDSAnalysis):
             #     )  # [batch, h, w]
 
             # store in the dict
-            # layer_act_dict[self.layer_name[l]][i] = layer_act.cpu().detach().numnpy()
+            # layer_act_dict[self.layer_name[l]][i] = layer_act.cpu().detach().numpy()
             # layer_act_dict[self.layer_name[i]][id_start:id_end] = (
             #     layer_act.cpu().detach().numpy()
             # )
@@ -967,21 +1049,7 @@ class RDS_LayerAct(RDSAnalysis):
     ):
 
         # load layer activation
-        data, labels = {}, {}
-        for condition, dotMatch in (("ards", 0.0), ("hmrds", 0.5), ("crds", 1.0)):
-            suffix = f"_dotDens_{dotDens:.2f}_dotMatch_{dotMatch:.2f}.npy"
-            data[condition] = np.load(
-                Path(self.layer_act_dir) / ("act_rds" + suffix),
-                allow_pickle=True,
-            ).item()
-            if data[condition].get("_metadata") != self._metadata():
-                raise ValueError(
-                    "Legacy or incompatible activation files; regenerate all conditions"
-                )
-            labels[condition] = np.load(
-                Path(self.layer_act_dir) / ("targetDisp_rds" + suffix)
-            )
-
+        data, labels = self._load_layer_activation(dotDens)
         y = labels["crds"]
         expected = np.repeat(self.disp_ct_pix_list, self.n_rds_each_disp)
         if not np.array_equal(y, expected) or len(np.unique(y)) != 2:
@@ -996,6 +1064,7 @@ class RDS_LayerAct(RDSAnalysis):
             raise ValueError(
                 "Too few independent groups; increase samples or reduce inference batch size"
             )
+
         splitter = GroupShuffleSplit(
             n_splits=n_bootstrap,
             train_size=split_train,
@@ -1013,7 +1082,7 @@ class RDS_LayerAct(RDSAnalysis):
 
             mask_train[repeat, train] = True
 
-        # array allocations
+        # buffer allocations
         conditions = ("crds", "hmrds", "ards")
         pairs = {
             "crds_ards": ("crds", "ards"),
@@ -1112,6 +1181,151 @@ class RDS_LayerAct(RDSAnalysis):
             )
 
         return {"alignment": alignment, "reliability": reliability}
+
+    def compute_cosineSim_disparity_layers(
+        self,
+        dotDens: float,
+        split_train: float,
+        n_bootstrap: int,
+        split_seed: int = 3407,
+    ):
+        """
+        Compute cosine similarity between disparity profiles for each layer.
+        assume each disp_channel in a layer is a neuron with n_features
+
+        disparity profile here is the average of layer activation across feature channels.
+        Specifically:
+            P(d) = layer_act[n_samples, n_feature, n_disp].mean(axis=1)
+            P(d) = layer_act[n_samples, n_disp]
+
+        Then, compute the difference between disparity profiles for near and far:
+            delta_P = P_near - P_far
+
+        Finally, compute
+        1. cosine-similarity(delta_P_crds, delta_P_ards)
+        2. cosine-similarity(delta_P_crds, delta_P_hmrds)
+        3. cosine-similarity(delta_P_hmrds, delta_P_ards)
+
+        """
+
+        # load layer activation for the given dotDens
+        dotDens = 0.1
+        data, labels = self._load_layer_activation(dotDens)
+        y = labels["crds"]
+        expected = np.repeat(self.disp_ct_pix_list, self.n_rds_each_disp)
+        if not np.array_equal(y, expected) or len(np.unique(y)) != 2:
+            raise ValueError(
+                "This near/far analysis requires exactly two disparity classes"
+            )
+        if not all(np.array_equal(y, value) for value in labels.values()):
+            raise ValueError("Condition labels/order do not match")
+
+        groups = self._split_groups(len(y))
+        if len(np.unique(groups)) < 2:
+            raise ValueError(
+                "Too few independent groups; increase samples or reduce inference batch size"
+            )
+
+        splitter = GroupShuffleSplit(
+            n_splits=n_bootstrap,
+            train_size=split_train,
+            random_state=split_seed,
+        )
+
+        # create near/far membership matrices [n_bootstrap, n_sample]
+        # Shared by every layer: turns an (n_layers * n_bootstrap)-iteration
+        mask_train = np.zeros((n_bootstrap, len(y)), dtype=bool)
+        for repeat, (train, test) in enumerate(
+            splitter.split(np.zeros(len(y)), y, groups)
+        ):
+            if len(np.unique(y[train])) != 2 or len(np.unique(y[test])) != 2:
+                raise ValueError("Both disparity classes must occur in each fold")
+
+            mask_train[repeat, train] = True
+
+        # buffer allocations
+        conditions = ("crds", "hmrds", "ards")
+        pairs = {
+            "crds_ards": ("crds", "ards"),
+            "crds_hmrds": ("crds", "hmrds"),
+            "hmrds_ards": ("hmrds", "ards"),
+        }
+        weights_train = self._contrast_weights(
+            mask_train, y
+        )  # [n_bootstrap, n_samples_per_cond]
+        shape = (n_bootstrap, len(self.layer_name))
+        alignment = {pair: np.full(shape, np.nan, dtype=np.float32) for pair in pairs}
+
+        chunk_size = 128
+        tol = 1e-12
+        for layer_idx, layer_name in enumerate(
+            tqdm(self.layer_name, desc="Cosine similarity disparity")
+        ):
+
+            x = {condition: data[condition][layer_name] for condition in conditions}
+            # sanity check
+            for condition, value in x.items():
+                if (
+                    value.ndim != 2
+                    or value.shape[0] != len(y)
+                    or value.shape[1] == 0
+                    or not np.isfinite(value).all()
+                ):
+                    raise ValueError(
+                        f"Invalid feature arrays for {condition} at {layer_name}"
+                    )
+
+            if len({value.shape[1] for value in x.values()}) != 1:
+                raise ValueError(
+                    f"Feature dimensionality differs between conditions at {layer_name}"
+                )
+
+            # Float64 accumulation; subtract a shared reference row per
+            # condition to reduce cancellation error. Contrast weights sum to
+            # zero (+1 total on near rows, -1 total on far rows), so shifting
+            # every row of a condition by the same constant vector does not
+            # change the weighted near-minus-far result.
+            centered = {}
+            for condition, values in x.items():
+                value = np.asarray(
+                    values, dtype=np.float64
+                )  # [n_samples_per_cond, n_feat]
+                centered[condition] = value - value[0]
+
+            for begin in range(0, n_bootstrap, chunk_size):
+                # begin = 0
+                end = min(begin + chunk_size, n_bootstrap)
+
+                # compute alignment: cosine similarity between rds conditions
+                train_axes = {}
+                for condition in conditions:
+
+                    train_ax = (
+                        weights_train[begin:end] @ centered[condition]
+                    )  # [chunk_size, n_samples_per_cond] x [n_samples_per_cond, n_feat_channel * n_disp_channel]
+                    # = [chunck_size, n_feat_channel * n_disp_channel]
+                    # => [chunck_size, n_feat_channel, n_disp_channel]
+                    # => [chunck_size, n_disp_channel]
+                    n_features = self.layer_shapes[layer_name][0]
+                    n_disps = self.layer_shapes[layer_name][1]
+                    train_axes[condition] = train_ax.reshape(
+                        chunk_size, n_features, n_disps
+                    ).mean(axis=1)
+
+                for pair, (rds1, rds2) in pairs.items():
+                    alignment[pair][begin:end, layer_idx] = self._cosine_sim_rows(
+                        train_axes[rds1], train_axes[rds2], tol
+                    )
+            del centered
+
+        for pair, score in alignment.items():
+            np.save(
+                Path(self.layer_act_dir)
+                / f"cosineSim_disparity_{pair}_dotDens_{dotDens:.2f}_bootstrap.npy",
+                score,
+            )
+
+        return {"alignment": alignment}
 
     def _load_cosine_simi_data(self, dotDens: float):
 
@@ -1593,7 +1807,7 @@ class RDS_LayerAct(RDSAnalysis):
         self,
         dotDens: float,
         split_train: float,
-        n_bootstrap: int,
+        n_bootstrap_xDecode: int,
         split_seed: int = 3407,
         C: float = 1.0,
     ):
@@ -1603,24 +1817,10 @@ class RDS_LayerAct(RDSAnalysis):
         are shared across conditions and layers; no tuning on aRDS scores.
         """
 
-        if not 0 < split_train < 1 or n_bootstrap < 1 or C <= 0:
+        if not 0 < split_train < 1 or n_bootstrap_xDecode < 1 or C <= 0:
             raise ValueError("Require 0 < split_train < 1, positive repeats and C")
 
-        data, labels = {}, {}
-        for condition, match in (("ards", 0.0), ("hmrds", 0.5), ("crds", 1.0)):
-            suffix = f"_dotDens_{dotDens:.2f}_dotMatch_{match:.2f}.npy"
-            data[condition] = np.load(
-                Path(self.layer_act_dir) / ("act_rds" + suffix),
-                allow_pickle=True,
-            ).item()
-            if data[condition].get("_metadata") != self._metadata():
-                raise ValueError(
-                    "Legacy or incompatible activation files; regenerate all conditions"
-                )
-            labels[condition] = np.load(
-                Path(self.layer_act_dir) / ("targetDisp_rds" + suffix)
-            )
-
+        data, labels = self._load_layer_activation(dotDens)
         y = labels["crds"]
         expected = np.repeat(self.disp_ct_pix_list, self.n_rds_each_disp)
         if not np.array_equal(y, expected) or len(np.unique(y)) != 2:
@@ -1637,7 +1837,7 @@ class RDS_LayerAct(RDSAnalysis):
             )
         splits = list(
             GroupShuffleSplit(
-                n_splits=n_bootstrap,
+                n_splits=n_bootstrap_xDecode,
                 train_size=split_train,
                 random_state=split_seed,
             ).split(np.zeros(len(y)), y, groups)
@@ -1647,7 +1847,7 @@ class RDS_LayerAct(RDSAnalysis):
             if len(np.unique(y[train])) != 2 or len(np.unique(y[test])) != 2:
                 raise ValueError("Both disparity classes must occur in each fold")
         scores = {
-            condition: np.empty((n_bootstrap, len(self.layer_name)), np.float32)
+            condition: np.empty((n_bootstrap_xDecode, len(self.layer_name)), np.float32)
             for condition in data
         }
         for layer_index, layer in enumerate(
@@ -1676,12 +1876,13 @@ class RDS_LayerAct(RDSAnalysis):
         for condition, score in scores.items():
             np.save(
                 Path(self.layer_act_dir)
-                / f"xDecode_score_{condition}_dotDens_{dotDens:.2f}_bootstrap.npy",
+                / f"xDecode_layers_score_{condition}_dotDens_{dotDens:.2f}_bootstrap.npy",
                 score,
             )
         # Save settings and exact folds so a score is traceable.
         np.savez(
-            Path(self.layer_act_dir) / f"xDecode_splits_dotDens_{dotDens:.2f}.npz",
+            Path(self.layer_act_dir)
+            / f"xDecode_layers_splits_dotDens_{dotDens:.2f}.npz",
             train=(
                 np.stack([train for train, _ in splits])
                 if len({len(t) for t, _ in splits}) == 1
@@ -1698,23 +1899,77 @@ class RDS_LayerAct(RDSAnalysis):
         )
         # return scores
 
-    def compute_xDecode_layers(self, split_train: float):
+    def compute_xDecode_layers(self, split_train: float, max_workers: int = 9) -> None:
+        """
+        Cross-decode for every dot densities concurrently, with bounded memory use.
 
-        for dotDens in self.dotDens_list:
-            self._xDecode(
-                dotDens,
-                split_train,
-                self.n_bootstrap,
+        Each density loads its own features and writes distinct score files.
+        Threads share the analysis settings without copying the GPU model into
+        child processes. Increase max_workers only if host RAM permits it.
+        """
+        if (
+            not isinstance(max_workers, int)
+            or isinstance(max_workers, bool)
+            or max_workers < 1
+        ):
+            raise ValueError("max_workers must be a positive integer")
+
+        dotDens_list = list(self.dotDens_list)
+        # Output filenames retain two decimal places; duplicates would overwrite.
+        if len({f"{density:.2f}" for density in dotDens_list}) != len(dotDens_list):
+            raise ValueError("Dot densities must be distinct to two decimal places")
+        if not dotDens_list:
+            return
+
+        state = _XDecodeState(
+            layer_act_dir=self.layer_act_dir,
+            activation_metadata=self._metadata(),
+            layer_name=list(self.layer_name),
+            disp_ct_pix_list=list(self.disp_ct_pix_list),
+            n_rds_each_disp=self.n_rds_each_disp,
+            batch_size_rds=self.batch_size_rds,
+        )
+        if max_workers == 1 or len(dotDens_list) == 1:
+            for density in tqdm(dotDens_list, desc="Cross-decoding densities"):
+                _xdecode_density_process(
+                    state,
+                    density,
+                    split_train,
+                    self.n_bootstrap_xDecode,
+                )
+            return
+
+        # loky processes avoid sklearnex's unsupported threading backend.
+        # Limit native BLAS/OpenMP threads inside each process as well.
+        with parallel_config(backend="loky", inner_max_num_threads=8):
+            results = Parallel(
+                n_jobs=min(max_workers, len(dotDens_list)),
+                pre_dispatch="n_jobs",
+                return_as="generator",
+            )(
+                delayed(_xdecode_density_process)(
+                    state,
+                    density,
+                    split_train,
+                    self.n_bootstrap_xDecode,
+                )
+                for density in dotDens_list
             )
+            for _ in tqdm(
+                results,
+                total=len(dotDens_list),
+                desc="Cross-decoding densities",
+            ):
+                pass  # Consume results so worker failures reach the caller.
 
-    def _load_scores(self, dotDens):
+    def _load_scores(self, dotDens: float):
 
         # scores = {rds_cond: np.empty((n_bootstrap, len(self.layer_name))}
         # rds_cond: "ards", "hmrds", "crds"
         scores = {
             rds_cond: np.load(
                 Path(self.layer_act_dir)
-                / f"xDecode_score_{rds_cond}_dotDens_{dotDens:.2f}_bootstrap.npy"
+                / f"xDecode_layers_score_{rds_cond}_dotDens_{dotDens:.2f}_bootstrap.npy"
             )
             for rds_cond in ("ards", "hmrds", "crds")
         }
@@ -1818,7 +2073,7 @@ class RDS_LayerAct(RDSAnalysis):
 
                 # load xDecode scores
                 # dotDens = 0.1
-                # scores = {rds_cond: np.empty((n_bootstrap, len(self.layer_name))}
+                # scores = {rds_cond: np.empty((n_bootstrap_xDecode, len(self.layer_name))}
                 # rds_cond: "ards", "hmrds", "crds"
                 score = self._load_scores(dotDens)
 

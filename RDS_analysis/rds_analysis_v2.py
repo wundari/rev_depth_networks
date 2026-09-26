@@ -155,6 +155,9 @@ class RDSAnalysis(EngineBase):
         )  # 1: use pedestal to ensure rds disparity > 0
         self.n_bootstrap = (
             config.n_bootstrap
+        )  # number of bootstrap samples for cosine-similarity analysis
+        self.n_bootstrap_xDecode = (
+            config.n_bootstrap_xDecode
         )  # number of bootstrap samples for cross-decoding analysis
 
         self.target_disp = (

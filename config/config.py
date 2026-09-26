@@ -113,4 +113,9 @@ class Config:
     )  # dot match
     background_flag: bool = True  # 1: with cRDS background
     pedestal_flag: bool = False  # 1: use pedestal to ensure rds disparity > 0
-    n_bootstrap: int = 1000  # number of bootstrap samples for cross-decoding analysis
+    n_bootstrap: int = (
+        1000  # number of bootstrap samples for cosine-similarity analysis
+    )
+    n_bootstrap_xDecode: int = (
+        100  # number of bootstrap samples for cross-decoding analysis
+    )

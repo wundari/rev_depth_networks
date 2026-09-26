@@ -11,7 +11,6 @@ from torch.autograd import Variable
 
 from scipy.spatial.distance import cdist
 from sklearn.svm import SVC
-
 from joblib import Parallel, delayed
 
 import matplotlib.pyplot as plt
@@ -1639,8 +1638,8 @@ def plotHeat_rdm_all_conds(rdm_all_layers, save_flag):
     ]
 
     # %%start plotting
-    sns.set()
-    sns.set(context="paper", style="white", font_scale=2, palette="deep")
+    sns.set_theme()
+    sns.set_theme(context="paper", style="white", font_scale=2, palette="deep")
 
     # estimate v_min and v_max for cbar
     v_min = 0
