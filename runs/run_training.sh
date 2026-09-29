@@ -54,16 +54,25 @@
 #     done
 # done
 
-interactions=("bem" "default" "cmm" "sum_diff")
-seeds=(1618)
+#!/usr/bin/env bash
+set -euo pipefail
+
+model_name="GC_Net_L"
+config_file="config_gcnet_left"
+train_file="train_gcnet_left"
+interactions=("cmm" "sum_diff")
+seeds=(1618 11364 16476 27829 35154 35744 36675 43798 55826 59035 65190 82220 94750)
 for interaction in "${interactions[@]}"; do
     for seed in "${seeds[@]}"; do
         sed -i -E \
             -e "s/^([[:space:]]*binocular_interaction: str = ).*/\1\"${interaction}\"/" \
             -e "s/^([[:space:]]*seed: int = )[0-9]+/\1${seed}/" \
-            config/config_gcnet.py
+            config/${config_file}.py
 
-        echo "Training GCNet: interaction=$interaction, seed=$seed"
-        python -m scripts.training.train_gcnet || break 2
+        echo "Training $model_name: interaction=$interaction, seed=$seed, config_file=$config_file, train_file=$train_file"
+        python -m scripts.training.${train_file}
     done
 done
+
+# run rds analysis after all training runs succeed
+python -m scripts.analysis.run_ga_rds_gcnet_left

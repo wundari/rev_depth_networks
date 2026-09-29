@@ -1028,17 +1028,66 @@ class RDS_LayerAct(RDSAnalysis):
 
     @staticmethod
     def _contrast_weights(
-        mask: Bool[np.ndarray, "n_bootstrap n_samples_per_cond"],
-        label: Bool[np.ndarray, "n_samples_per_cond"],
-    ) -> Float[np.ndarray, "n_bootstrap n_samples_per_cond"]:
+        mask: np.ndarray,
+        label: np.ndarray,
+    ) -> np.ndarray:
+        """
+        Construct weights for:
+
+            mean(near) - mean(far)
+
+        independently for every split.
+
+        Parameters
+        ----------
+        mask : np.ndarray
+            Boolean array with shape [n_splits, n_samples].
+        label : np.ndarray
+            Disparity labels with shape [n_samples].
+            Positive values are treated as near and negative values as far.
+
+        Returns
+        -------
+        weights : np.ndarray
+            Array with shape [n_splits, n_samples].
+
+            For every split, weights sum to zero:
+                +1 total weight over selected near samples
+                -1 total weight over selected far samples
+        """
+
+        mask = np.asarray(mask, dtype=bool)
+        label = np.asarray(label)
+
+        if mask.ndim != 2:
+            raise ValueError("mask must have shape [n_splits, n_samples]")
+
+        if label.ndim != 1 or mask.shape[1] != label.shape[0]:
+            raise ValueError(
+                "label must have shape [n_samples] and match mask.shape[1]"
+            )
 
         is_near = label > 0
         is_far = label < 0
-        mask_near = is_near[None, :]
-        mask_far = is_far[None, :]
-        near = (mask & mask_near) / mask_near.sum(axis=1, keepdims=True)
-        far = (mask & mask_far) / mask_far.sum(axis=1, keepdims=True)
-        return near - far
+
+        if np.any(~(is_near | is_far)):
+            raise ValueError("Disparity labels must be non-zero for near/far contrast")
+
+        selected_near = mask & is_near[None, :]
+        selected_far = mask & is_far[None, :]
+
+        n_near = selected_near.sum(axis=1, keepdims=True)
+        n_far = selected_far.sum(axis=1, keepdims=True)
+
+        if np.any(n_near == 0) or np.any(n_far == 0):
+            raise ValueError(
+                "Every split must contain at least one near and one far sample"
+            )
+
+        near_weights = selected_near.astype(np.float64) / n_near
+        far_weights = selected_far.astype(np.float64) / n_far
+
+        return near_weights - far_weights
 
     def compute_cosine_similarity_layers(
         self,
@@ -1188,42 +1237,118 @@ class RDS_LayerAct(RDSAnalysis):
         split_train: float,
         n_bootstrap: int,
         split_seed: int = 3407,
+        profile_mode: str = "mean",
     ):
         """
-        Compute cosine similarity between disparity profiles for each layer.
-        assume each disp_channel in a layer is a neuron with n_features
+        Compute cosine similarity between near-far disparity-profile
+        contrasts across RDS types for every GC-Net layer.
 
-        disparity profile here is the average of layer activation across feature channels.
-        Specifically:
-            P(d) = layer_act[n_samples, n_feature, n_disp].mean(axis=1)
-            P(d) = layer_act[n_samples, n_disp]
+        For each sample, the pooled layer activation has shape:
 
-        Then, compute the difference between disparity profiles for near and far:
-            delta_P = P_near - P_far
+            [feature_channel * disparity_channel]
 
-        Finally, compute
-        1. cosine-similarity(delta_P_crds, delta_P_ards)
-        2. cosine-similarity(delta_P_crds, delta_P_hmrds)
-        3. cosine-similarity(delta_P_hmrds, delta_P_ards)
+        It is reconstructed as:
 
+            A[f, d]
+
+        and reduced across feature channels to obtain a disparity profile:
+
+            P(d)
+
+        profile_mode determines the reduction:
+
+            "mean":
+                P(d) = mean_f A(f, d)
+
+            "mean_abs":
+                P(d) = mean_f |A(f, d)|
+
+            "rms":
+                P(d) = sqrt(mean_f A(f, d)^2)
+
+        For each grouped split and RDS condition, the disparity contrast is:
+
+            delta_P(d)
+                = mean_near P(d)
+                - mean_far P(d)
+
+        Alignment is then measured between RDS conditions:
+
+            cos(delta_P_crds, delta_P_ards)
+            cos(delta_P_crds, delta_P_hmrds)
+            cos(delta_P_hmrds, delta_P_ards)
+
+        Reliability is also measured within each RDS condition:
+
+            cos(delta_P_train, delta_P_test)
+
+        Notes
+        -----
+        `n_bootstrap` is retained for compatibility with the existing analysis,
+        but the procedure is repeated grouped holdout rather than bootstrap
+        resampling with replacement.
+
+        The currently saved layer activations are spatially averaged and,
+        for layers 19-36a, correspond to the hooked convolutional output
+        before the following BatchNorm/ReLU.
         """
 
-        # load layer activation for the given dotDens
-        dotDens = 0.1
+        # --------------------------------------------------------------
+        # validate arguments
+        # --------------------------------------------------------------
+        if self.model_name != "GC_Net":
+            raise ValueError(
+                "Disparity-profile analysis currently requires GC_Net layers"
+            )
+
+        if not 0.0 < split_train < 1.0:
+            raise ValueError("split_train must satisfy 0 < split_train < 1")
+
+        if (
+            not isinstance(n_bootstrap, int)
+            or isinstance(n_bootstrap, bool)
+            or n_bootstrap < 1
+        ):
+            raise ValueError("n_bootstrap must be a positive integer")
+
+        valid_profile_modes = {"mean", "mean_abs", "rms"}
+
+        if profile_mode not in valid_profile_modes:
+            raise ValueError(
+                f"profile_mode must be one of {sorted(valid_profile_modes)}, "
+                f"got {profile_mode!r}"
+            )
+
+        # --------------------------------------------------------------
+        # load activations
+        # --------------------------------------------------------------
         data, labels = self._load_layer_activation(dotDens)
+
+        conditions = ("crds", "hmrds", "ards")
         y = labels["crds"]
-        expected = np.repeat(self.disp_ct_pix_list, self.n_rds_each_disp)
+
+        expected = np.repeat(
+            self.disp_ct_pix_list,
+            self.n_rds_each_disp,
+        )
+
         if not np.array_equal(y, expected) or len(np.unique(y)) != 2:
             raise ValueError(
                 "This near/far analysis requires exactly two disparity classes"
             )
-        if not all(np.array_equal(y, value) for value in labels.values()):
-            raise ValueError("Condition labels/order do not match")
 
+        if not all(np.array_equal(y, labels[condition]) for condition in conditions):
+            raise ValueError("Condition labels/order do not match across RDS types")
+
+        # --------------------------------------------------------------
+        # grouped train/test splits
+        # --------------------------------------------------------------
         groups = self._split_groups(len(y))
+
         if len(np.unique(groups)) < 2:
             raise ValueError(
-                "Too few independent groups; increase samples or reduce inference batch size"
+                "Too few independent groups; increase samples or "
+                "reduce inference batch size"
             )
 
         splitter = GroupShuffleSplit(
@@ -1232,39 +1357,127 @@ class RDS_LayerAct(RDSAnalysis):
             random_state=split_seed,
         )
 
-        # create near/far membership matrices [n_bootstrap, n_sample]
-        # Shared by every layer: turns an (n_layers * n_bootstrap)-iteration
-        mask_train = np.zeros((n_bootstrap, len(y)), dtype=bool)
+        mask_train = np.zeros(
+            (n_bootstrap, len(y)),
+            dtype=bool,
+        )
+
+        mask_test = np.zeros_like(mask_train)
+
         for repeat, (train, test) in enumerate(
-            splitter.split(np.zeros(len(y)), y, groups)
+            splitter.split(
+                np.zeros(len(y)),
+                y,
+                groups,
+            )
         ):
             if len(np.unique(y[train])) != 2 or len(np.unique(y[test])) != 2:
-                raise ValueError("Both disparity classes must occur in each fold")
+                raise ValueError("Both disparity classes must occur in every fold")
 
             mask_train[repeat, train] = True
+            mask_test[repeat, test] = True
 
-        # buffer allocations
-        conditions = ("crds", "hmrds", "ards")
+        if np.any(mask_train & mask_test):
+            raise RuntimeError("Train and test masks overlap")
+
+        # --------------------------------------------------------------
+        # near - far contrast weights
+        # --------------------------------------------------------------
+        weights_train = self._contrast_weights(
+            mask_train,
+            y,
+        )
+
+        weights_test = self._contrast_weights(
+            mask_test,
+            y,
+        )
+
+        # Numerical sanity check.
+        if not np.allclose(
+            weights_train.sum(axis=1),
+            0.0,
+            atol=1e-12,
+        ):
+            raise RuntimeError("Training contrast weights do not sum to zero")
+
+        if not np.allclose(
+            weights_test.sum(axis=1),
+            0.0,
+            atol=1e-12,
+        ):
+            raise RuntimeError("Test contrast weights do not sum to zero")
+
+        # --------------------------------------------------------------
+        # output buffers
+        # --------------------------------------------------------------
         pairs = {
             "crds_ards": ("crds", "ards"),
             "crds_hmrds": ("crds", "hmrds"),
             "hmrds_ards": ("hmrds", "ards"),
         }
-        weights_train = self._contrast_weights(
-            mask_train, y
-        )  # [n_bootstrap, n_samples_per_cond]
-        shape = (n_bootstrap, len(self.layer_name))
-        alignment = {pair: np.full(shape, np.nan, dtype=np.float32) for pair in pairs}
 
-        chunk_size = 128
+        shape = (
+            n_bootstrap,
+            len(self.layer_name),
+        )
+
+        alignment = {
+            pair: np.full(
+                shape,
+                np.nan,
+                dtype=np.float32,
+            )
+            for pair in pairs
+        }
+
+        reliability = {
+            condition: np.full(
+                shape,
+                np.nan,
+                dtype=np.float32,
+            )
+            for condition in conditions
+        }
+
         tol = 1e-12
+        # --------------------------------------------------------------
+        # layer-wise analysis
+        # --------------------------------------------------------------
         for layer_idx, layer_name in enumerate(
-            tqdm(self.layer_name, desc="Cosine similarity disparity")
+            tqdm(
+                self.layer_name,
+                desc="Cosine similarity: disparity profiles",
+            )
         ):
 
-            x = {condition: data[condition][layer_name] for condition in conditions}
-            # sanity check
-            for condition, value in x.items():
+            if layer_name not in self.layer_shapes:
+                raise KeyError(f"No layer shape metadata for {layer_name}")
+
+            # ----------------------------------------------------------
+            # Infer feature count directly from hooked Conv3d /
+            # ConvTranspose3d module.
+            #
+            # This avoids relying only on flattened dimensionality:
+            # e.g. 32*96 == 64*48.
+            # ----------------------------------------------------------
+            module = self.target_list[layer_idx]
+
+            if not hasattr(module, "out_channels"):
+                raise ValueError(
+                    f"Cannot infer feature channels for {layer_name}: "
+                    f"{type(module).__name__} has no out_channels"
+                )
+
+            n_features = int(module.out_channels)
+            # ----------------------------------------------------------
+            # validate activation arrays and infer disparity dimension
+            # ----------------------------------------------------------
+            flat_dims = set()
+
+            for condition in conditions:
+                value = data[condition][layer_name]
+
                 if (
                     value.ndim != 2
                     or value.shape[0] != len(y)
@@ -1272,60 +1485,175 @@ class RDS_LayerAct(RDSAnalysis):
                     or not np.isfinite(value).all()
                 ):
                     raise ValueError(
-                        f"Invalid feature arrays for {condition} at {layer_name}"
+                        f"Invalid feature array for "
+                        f"{condition} at {layer_name}: "
+                        f"shape={value.shape}"
                     )
 
-            if len({value.shape[1] for value in x.values()}) != 1:
+                flat_dims.add(value.shape[1])
+
+            if len(flat_dims) != 1:
                 raise ValueError(
-                    f"Feature dimensionality differs between conditions at {layer_name}"
+                    f"Feature dimensionality differs between "
+                    f"RDS conditions at {layer_name}"
                 )
 
-            # Float64 accumulation; subtract a shared reference row per
-            # condition to reduce cancellation error. Contrast weights sum to
-            # zero (+1 total on near rows, -1 total on far rows), so shifting
-            # every row of a condition by the same constant vector does not
-            # change the weighted near-minus-far result.
-            centered = {}
-            for condition, values in x.items():
-                value = np.asarray(
-                    values, dtype=np.float64
-                )  # [n_samples_per_cond, n_feat]
-                centered[condition] = value - value[0]
+            flat_dim = flat_dims.pop()
 
-            for begin in range(0, n_bootstrap, chunk_size):
-                # begin = 0
-                end = min(begin + chunk_size, n_bootstrap)
+            if flat_dim % n_features != 0:
+                raise ValueError(
+                    f"{layer_name}: flattened dimension {flat_dim} "
+                    f"is not divisible by {n_features} feature channels"
+                )
 
-                # compute alignment: cosine similarity between rds conditions
-                train_axes = {}
-                for condition in conditions:
+            n_disps = flat_dim // n_features
 
-                    train_ax = (
-                        weights_train[begin:end] @ centered[condition]
-                    )  # [chunk_size, n_samples_per_cond] x [n_samples_per_cond, n_feat_channel * n_disp_channel]
-                    # = [chunck_size, n_feat_channel * n_disp_channel]
-                    # => [chunck_size, n_feat_channel, n_disp_channel]
-                    # => [chunck_size, n_disp_channel]
-                    n_features = self.layer_shapes[layer_name][0]
-                    n_disps = self.layer_shapes[layer_name][1]
-                    train_axes[condition] = train_ax.reshape(
-                        chunk_size, n_features, n_disps
-                    ).mean(axis=1)
+            # Cross-check manually defined layer metadata.
+            expected_features, expected_disps = self.layer_shapes[layer_name]
 
-                for pair, (rds1, rds2) in pairs.items():
-                    alignment[pair][begin:end, layer_idx] = self._cosine_sim_rows(
-                        train_axes[rds1], train_axes[rds2], tol
+            if n_features != expected_features or n_disps != expected_disps:
+                raise ValueError(
+                    f"Layer-shape mismatch at {layer_name}: "
+                    f"inferred [{n_features}, {n_disps}], "
+                    f"metadata says "
+                    f"[{expected_features}, {expected_disps}]"
+                )
+
+            # ----------------------------------------------------------
+            # Convert:
+            # [sample, feature * disparity] -> [sample, feature, disparity]
+            #       ->
+            # [sample, disparity]
+            #
+            # Importantly, reduce across feature channels BEFORE
+            # multiplying by the split weights.
+            #
+            # For profile_mode == "mean" this is mathematically
+            # equivalent to the previous implementation because both
+            # operations are linear, but it is substantially cheaper.
+            # ----------------------------------------------------------
+            profiles = {}
+
+            for condition in conditions:
+
+                value = np.asarray(data[condition][layer_name])
+                value = value.reshape(
+                    len(y),
+                    n_features,
+                    n_disps,
+                )
+
+                if profile_mode == "mean":
+                    profile = value.mean(
+                        axis=1,
+                        dtype=np.float64,
                     )
-            del centered
 
+                elif profile_mode == "mean_abs":
+                    profile = np.abs(value).mean(
+                        axis=1,
+                        dtype=np.float64,
+                    )
+
+                elif profile_mode == "rms":
+                    profile = np.sqrt(
+                        np.square(
+                            value,
+                            dtype=np.float64,
+                        ).mean(axis=1)
+                    )
+
+                # Subtracting a common reference profile does not change
+                # the near-far contrast because the corrected contrast
+                # weights sum exactly to zero. It helps reduce numerical
+                # cancellation when computing differences of large means.
+                profile = profile - profile[0]
+                profiles[condition] = profile
+
+            # ----------------------------------------------------------
+            # Construct near-far disparity axes
+            # [n_split, n_sample] @ [n_sample, n_disp] -> [n_split, n_disp]
+            # ----------------------------------------------------------
+            delta_train = {}
+            delta_test = {}
+            for condition in conditions:
+
+                delta_train[condition] = weights_train @ profiles[condition]
+                delta_test[condition] = weights_test @ profiles[condition]
+
+                # ------------------------------------------------------
+                # reliability:
+                # Is the near-far disparity direction reproducible
+                # across independent train/test subsets?
+                # ------------------------------------------------------
+                reliability[condition][:, layer_idx] = self._cosine_sim_rows(
+                    delta_train[condition],
+                    delta_test[condition],
+                    tol,
+                )
+
+            # ----------------------------------------------------------
+            # cross-RDS alignment
+            # ----------------------------------------------------------
+            for pair, (rds1, rds2) in pairs.items():
+
+                alignment[pair][:, layer_idx] = self._cosine_sim_rows(
+                    delta_train[rds1],
+                    delta_train[rds2],
+                    tol,
+                )
+
+        # --------------------------------------------------------------
+        # save
+        # --------------------------------------------------------------
+        # Preserve existing filename for the original signed mean.
+        # Alternative profile definitions get an explicit suffix so they
+        # cannot silently overwrite the primary analysis.
+        mode_suffix = "" if profile_mode == "mean" else f"_{profile_mode}"
         for pair, score in alignment.items():
             np.save(
                 Path(self.layer_act_dir)
-                / f"cosineSim_disparity_{pair}_dotDens_{dotDens:.2f}_bootstrap.npy",
+                / (
+                    f"cosineSim_disparity"
+                    f"{mode_suffix}_{pair}"
+                    f"_dotDens_{dotDens:.2f}"
+                    f"_bootstrap.npy"
+                ),
                 score,
             )
 
-        return {"alignment": alignment}
+        for condition, score in reliability.items():
+            np.save(
+                Path(self.layer_act_dir)
+                / (
+                    f"cosineSim_disparity"
+                    f"{mode_suffix}_reliab_{condition}"
+                    f"_dotDens_{dotDens:.2f}"
+                    f"_bootstrap.npy"
+                ),
+                score,
+            )
+
+        # Save analysis settings and exact masks for reproducibility.
+        np.savez(
+            Path(self.layer_act_dir)
+            / (
+                f"cosineSim_disparity"
+                f"{mode_suffix}_splits"
+                f"_dotDens_{dotDens:.2f}.npz"
+            ),
+            train_mask=mask_train,
+            test_mask=mask_test,
+            split_train=split_train,
+            split_seed=split_seed,
+            n_bootstrap=n_bootstrap,
+            profile_mode=profile_mode,
+        )
+
+        return {
+            "alignment": alignment,
+            "reliability": reliability,
+        }
 
     def _load_cosine_simi_data(self, dotDens: float):
 

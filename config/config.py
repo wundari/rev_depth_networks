@@ -13,10 +13,10 @@ from dataclasses_json import dataclass_json
 class Config:
 
     # learning params
-    lr: float = 9e-4  # 6e-4
+    lr: float = 6e-4
     # lr_decay_rate: float = 0.99
-    max_lr: float = 9e-4  # 6e-4
-    min_lr: float = 9e-5  # 6e-5
+    max_lr: float = 6e-4
+    min_lr: float = 6e-5
     warmup_steps: int = 250
 
     # dataset parameter
@@ -24,14 +24,14 @@ class Config:
     dataset_directory: str = ""
     validation: str = "validation"
     checkpoint: str = "dev"
-    c_disp_shift: float = 1.5  # 2.0  # a multiplier for shifting disparity map
+    c_disp_shift: float = 2.0  # a multiplier for shifting disparity map
     validation_fraction: float = 0.1  # fraction of dataset used for validation
     test_fraction: float = 0.1  # fraction of dataset used for testing
     split_seed: int = 42  # fixed across all model seeds/interactions
 
     # training params
     batch_size: int = 4
-    batch_size_val: int = 4
+    batch_size_val: int = 8
     num_workers: int = 4  # the number of cpu cores for train dataloader
     eval_num_workers: int = 4  # the number of cpu cores for val dataloader
     persistent_workers: bool = True
@@ -49,14 +49,12 @@ class Config:
     # logging
     log_tqdm: bool = False  # whether to monitor loss values using tqdm
     log_interval: int = 100  # interval for tqdm logging
-    eval_interval: int = 100  # 500  # interval for calculating validation error
-    n_iter_eval: int = (
-        200  # 400  # the number of datasets to compute validation performance
-    )
+    eval_interval: int = 500  # interval for calculating validation error
+    n_iter_eval: int = 400  # the number of datasets to compute validation performance
     save_snapshot: bool = (
         True  # whether to save predicted disparity map at the end of each epoch
     )
-    clip_max_norm: float = 0.1  # 1.0  # gradient clipping max norm
+    clip_max_norm: float = 1.0  # gradient clipping max norm
     device: str = (
         "cuda"
         if torch.cuda.is_available()
