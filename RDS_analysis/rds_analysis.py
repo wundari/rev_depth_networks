@@ -20,6 +20,7 @@ from SVM.svm_analysis import *
 from BNN.modules.bnn import build_bnn
 from GC_Net.modules.gcnet import build_gcnet
 from GC_Net_L.modules.gcnet import build_gcnet
+from GC_Net_LR.modules.gcnet import build_gcnet
 from config.config_bnn import ConfigBNN
 from config.config_gcnet import ConfigGCNet
 from utilities.misc import NestedTensor
@@ -161,11 +162,13 @@ class RDSAnalysis(EngineBase):
             os.mkdir(self.xDecode_dir)
 
     def _build_model(self, config: ConfigBNN | ConfigGCNet) -> None:
-        if config.model_name == "BNN":
+        if self.model_name == "BNN":
             return build_bnn(config)
-        elif config.model_name == "GC_Net":
+        elif self.model_name == "GC_Net:
             return build_gcnet(config)
-        elif config.model_name == "GC_Net_L":
+        elif self.model_name == "GC_Net_L":
+            return build_gcnet(config)
+        elif self.model_name == "GC_Net_LR":
             return build_gcnet(config)
 
     @torch.inference_mode()

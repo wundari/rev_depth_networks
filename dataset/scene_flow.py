@@ -285,7 +285,7 @@ def _load_stereo_sample(dataset, idx):
     if dataset.transformation is not None:
         dataset.transformation.set_random_seed(sample_seed)
 
-    # flipping left-right eyes if p = 0.5
+    # use left's ground truth as reference if p <= 0.5
     reference = 1 if rng.random() <= 0.5 else -1
     path = left_path if reference == 1 else right_path
     path = path.replace("frames_cleanpass", "disparity").replace(".png", ".pfm")

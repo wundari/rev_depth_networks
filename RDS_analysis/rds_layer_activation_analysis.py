@@ -149,7 +149,11 @@ class RDS_LayerAct(RDSAnalysis):
             ]
             self.layer_name = ["encoder1", "encoder2", "layer3", "layer4"]
 
-        elif self.model_name == "GC_Net" or self.model_name == "GC_Net_L":
+        elif (
+            self.model_name == "GC_Net"
+            or self.model_name == "GC_Net_L"
+            or self.model_name == "GC_Net_LR"
+        ):
             # self.target_list = [
             #     self.model.decoder.layer19[0],
             #     self.model.decoder.layer20[0],
@@ -206,7 +210,11 @@ class RDS_LayerAct(RDSAnalysis):
                 model.decoder.layer3[0],
                 model.decoder.layer4,
             ]
-        elif self.model_name == "GC_Net" or self.model_name == "GC_Net_L":
+        elif (
+            self.model_name == "GC_Net"
+            or self.model_name == "GC_Net_L"
+            or self.model_name == "GC_Net_LR"
+        ):
             self.layer_name = [
                 *(f"layer{i}" for i in range(19, 33)),
                 *(f"layer{i}a" for i in range(33, 37)),

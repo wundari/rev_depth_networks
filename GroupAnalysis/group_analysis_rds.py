@@ -15,6 +15,7 @@ from torch.utils.data import DataLoader
 
 from config.config_bnn import ConfigBNN
 from config.config_gcnet import ConfigGCNet
+from config.config_gcnet_lr import ConfigGCNet
 from RDS_analysis.rds_analysis_v2 import RDSAnalysis
 
 
