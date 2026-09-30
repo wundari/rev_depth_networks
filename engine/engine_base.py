@@ -27,6 +27,8 @@ from dataset.scene_flow import SceneFlowMonkaaDataset
 from dataset.loading import make_loader, make_train_eval_loader, batches_for_evaluation
 from config.config_bnn import ConfigBNN
 from config.config_gcnet import ConfigGCNet
+from config.config_gcnet_left import ConfigGCNet
+from config.config_gcnet_lr import ConfigGCNet
 from utilities.misc import NestedTensor
 
 

@@ -21,6 +21,7 @@ from RDS.DataHandler_RDS import RDS_Handler, DatasetRDS
 from SVM.svm_analysis import *
 from BNN.modules.bnn import build_bnn
 from GC_Net.modules.gcnet import build_gcnet
+from GC_Net_L.modules.gcnet import build_gcnet
 from config.config_bnn import ConfigBNN
 from config.config_gcnet import ConfigGCNet
 from utilities.misc import NestedTensor
@@ -216,6 +217,8 @@ class RDSAnalysis(EngineBase):
         if config.model_name == "BNN":
             return build_bnn(config)
         elif config.model_name == "GC_Net":
+            return build_gcnet(config)
+        elif config.model_name == "GC_Net_L":
             return build_gcnet(config)
 
     def update_network_config(
@@ -488,25 +491,23 @@ class RDSAnalysis(EngineBase):
             ref = disps / 10.0
 
             # build nested tensor
-            # input_data = NestedTensor(
-            #     left=inputs_left.to(self.config.device, non_blocking=True),
-            #     right=inputs_right.to(
-            #         self.config.device, non_blocking=True
-            #     ),
-            #     ref=ref.pin_memory().to(self.config.device, non_blocking=True),
-            # )
-            if ref.mean() > 0:
-                input_data = NestedTensor(
-                    left=inputs_left.to(self.config.device, non_blocking=True),
-                    right=inputs_right.to(self.config.device, non_blocking=True),
-                    ref=ref.pin_memory().to(self.config.device, non_blocking=True),
-                )
-            else:
-                input_data = NestedTensor(
-                    left=inputs_right.to(self.config.device, non_blocking=True),
-                    right=inputs_left.to(self.config.device, non_blocking=True),
-                    ref=ref.pin_memory().to(self.config.device, non_blocking=True),
-                )
+            input_data = NestedTensor(
+                left=inputs_left.to(self.config.device, non_blocking=True),
+                right=inputs_right.to(self.config.device, non_blocking=True),
+                ref=ref.pin_memory().to(self.config.device, non_blocking=True),
+            )
+            # if ref.mean() > 0:
+            #     input_data = NestedTensor(
+            #         left=inputs_left.to(self.config.device, non_blocking=True),
+            #         right=inputs_right.to(self.config.device, non_blocking=True),
+            #         ref=ref.pin_memory().to(self.config.device, non_blocking=True),
+            #     )
+            # else:
+            #     input_data = NestedTensor(
+            #         left=inputs_right.to(self.config.device, non_blocking=True),
+            #         right=inputs_left.to(self.config.device, non_blocking=True),
+            #         ref=ref.pin_memory().to(self.config.device, non_blocking=True),
+            #     )
 
             # model output
             with torch.autocast(device_type=self.config.device, dtype=torch.bfloat16):

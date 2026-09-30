@@ -57,11 +57,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-model_name="GC_Net_L"
-config_file="config_gcnet_left"
-train_file="train_gcnet_left"
-interactions=("cmm" "sum_diff")
-seeds=(1618 11364 16476 27829 35154 35744 36675 43798 55826 59035 65190 82220 94750)
+model_name="GC_Net_LR"
+config_file="config_gcnet_lr"
+train_file="train_gcnet_lr"
+interactions=("bem" "default")
+seeds=(1618 11364 16476 27829 35154)
 for interaction in "${interactions[@]}"; do
     for seed in "${seeds[@]}"; do
         sed -i -E \
@@ -75,4 +75,4 @@ for interaction in "${interactions[@]}"; do
 done
 
 # run rds analysis after all training runs succeed
-python -m scripts.analysis.run_ga_rds_gcnet_left
+python -m scripts.analysis.run_ga_rds_gcnet_lr

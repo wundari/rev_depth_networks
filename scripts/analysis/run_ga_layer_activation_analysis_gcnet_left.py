@@ -1,7 +1,7 @@
 def main():
 
     # load necessary modules
-    from config.config_gcnet import ConfigGCNet
+    from config.config_gcnet_left import ConfigGCNet
     from RDS_analysis.rds_layer_activation_analysis import RDS_LayerAct
 
     # set up GCNet model and RDS analysis

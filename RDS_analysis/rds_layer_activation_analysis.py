@@ -12,7 +12,7 @@ from RDS_analysis.rds_analysis_v2 import (
 from RDS.DataHandler_RDS import DatasetRDS
 
 from utilities.utils import *
-from utilities.misc import NestedTensor
+from utilities.misc import NestedTensor, load_layer_activation
 
 import os
 import numpy as np
@@ -34,6 +34,7 @@ from scipy.stats import sem
 from jaxtyping import Float, Bool
 from config.config_bnn import ConfigBNN
 from config.config_gcnet import ConfigGCNet
+from config.config_gcnet_left import ConfigGCNet
 
 # %%
 
@@ -55,11 +56,23 @@ class _XDecodeState:
     def _metadata(self):
         return self.activation_metadata
 
+    def _load_layer_activation(self, dotDens: float):
+        return load_layer_activation(
+            self.layer_act_dir,
+            self.activation_metadata,
+            dotDens,
+        )
+
     def _split_groups(self, n_samples_per_cond):
         return RDS_LayerAct._split_groups(self, n_samples_per_cond)
 
 
-def _xdecode_density_process(state, dot_density, split_train, n_bootstrap_xDecode):
+def _xdecode_density_process(
+    state: _XDecodeState,
+    dot_density: float,
+    split_train: float,
+    n_bootstrap_xDecode: int,
+):
     """Run existing decoding logic in a worker without copying the model."""
     return RDS_LayerAct._xDecode(
         state,
@@ -136,7 +149,7 @@ class RDS_LayerAct(RDSAnalysis):
             ]
             self.layer_name = ["encoder1", "encoder2", "layer3", "layer4"]
 
-        elif self.model_name == "GC_Net":
+        elif self.model_name == "GC_Net" or self.model_name == "GC_Net_L":
             # self.target_list = [
             #     self.model.decoder.layer19[0],
             #     self.model.decoder.layer20[0],
@@ -193,7 +206,7 @@ class RDS_LayerAct(RDSAnalysis):
                 model.decoder.layer3[0],
                 model.decoder.layer4,
             ]
-        elif self.model_name == "GC_Net":
+        elif self.model_name == "GC_Net" or self.model_name == "GC_Net_L":
             self.layer_name = [
                 *(f"layer{i}" for i in range(19, 33)),
                 *(f"layer{i}a" for i in range(33, 37)),
@@ -221,27 +234,11 @@ class RDS_LayerAct(RDSAnalysis):
 
     # load layer activation
     def _load_layer_activation(self, dotDens: float):
-
-        # data = {rds_cond: {layer_name: [n_samples, n_feat_channels * n_disp_channels]}
-        # labels = {rds_cond: [n_samples]}
-        # rds_cond: "ards", "hmrds", "crds"
-
-        data, labels = {}, {}
-        for rds_cond, dotMatch in (("ards", 0.0), ("hmrds", 0.5), ("crds", 1.0)):
-            suffix = f"_dotDens_{dotDens:.2f}_dotMatch_{dotMatch:.2f}.npy"
-            data[rds_cond] = np.load(
-                Path(self.layer_act_dir) / ("act_rds" + suffix),
-                allow_pickle=True,
-            ).item()
-            if data[rds_cond].get("_metadata") != self._metadata():
-                raise ValueError(
-                    "Legacy or incompatible activation files; regenerate all conditions"
-                )
-            labels[rds_cond] = np.load(
-                Path(self.layer_act_dir) / ("targetDisp_rds" + suffix)
-            )
-
-        return data, labels
+        return load_layer_activation(
+            self.layer_act_dir,
+            self._metadata(),
+            dotDens,
+        )
 
     def update_network_config(
         self, interaction: str, seed: int, epoch: int, iter: int
@@ -714,25 +711,25 @@ class RDS_LayerAct(RDSAnalysis):
             ref = disps / 10.0
 
             # build nested tensor
-            # input_data = NestedTensor(
-            #     left=inputs_left.to(self.config.device, non_blocking=True),
-            #     right=inputs_right.to(self.config.device, non_blocking=True),
-            #     ref=ref.pin_memory().to(self.config.device, non_blocking=True),
-            # )
+            input_data = NestedTensor(
+                left=inputs_left.to(self.config.device, non_blocking=True),
+                right=inputs_right.to(self.config.device, non_blocking=True),
+                ref=ref.pin_memory().to(self.config.device, non_blocking=True),
+            )
 
             # swap left and right inputs if ref < 0
-            if ref.mean() > 0:
-                input_data = NestedTensor(
-                    left=inputs_left.to(self.config.device, non_blocking=True),
-                    right=inputs_right.to(self.config.device, non_blocking=True),
-                    ref=ref.pin_memory().to(self.config.device, non_blocking=True),
-                )
-            else:
-                input_data = NestedTensor(
-                    left=inputs_right.to(self.config.device, non_blocking=True),
-                    right=inputs_left.to(self.config.device, non_blocking=True),
-                    ref=ref.pin_memory().to(self.config.device, non_blocking=True),
-                )
+            # if ref.mean() > 0:
+            #     input_data = NestedTensor(
+            #         left=inputs_left.to(self.config.device, non_blocking=True),
+            #         right=inputs_right.to(self.config.device, non_blocking=True),
+            #         ref=ref.pin_memory().to(self.config.device, non_blocking=True),
+            #     )
+            # else:
+            #     input_data = NestedTensor(
+            #         left=inputs_right.to(self.config.device, non_blocking=True),
+            #         right=inputs_left.to(self.config.device, non_blocking=True),
+            #         ref=ref.pin_memory().to(self.config.device, non_blocking=True),
+            #     )
 
             # compute activation for the whole layers
             captured = self.compute_layer_activations(
