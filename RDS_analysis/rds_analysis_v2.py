@@ -221,12 +221,16 @@ class RDSAnalysis(EngineBase):
     def _build_model(self, config: ConfigBNN | ConfigGCNet) -> None:
         if self.model_name == "BNN":
             return build_bnn(config)
-        elif self.model_name == "GC_Net":
+        else:  # GC_Net variants
             return build_gcnet(config)
-        elif self.model_name == "GC_Net_L":
-            return build_gcnet(config)
-        elif self.model_name == "GC_Net_LR":
-            return build_gcnet(config)
+        # elif self.model_name == "GC_Net":
+        #     return build_gcnet(config)
+        # elif self.model_name == "GC_Net_L":
+        #     return build_gcnet(config)
+        # elif self.model_name == "GC_Net_LR":
+        #     return build_gcnet(config)
+        # elif self.model_name == "GC_Net_GN_LR":
+        #     return build_gcnet(config)
 
     def update_network_config(
         self, interaction: str, seed: int, epoch: int, iter: int
