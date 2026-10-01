@@ -9,7 +9,7 @@ class ConfigGCNet(Config):
 
     model_name: str = "GC_NetGN_LR"
     binocular_interaction: str = "bem"
-    seed: int = 11364
+    seed: int = 1618
 
     # Preserve physical eye identity throughout
     # the dataset/model pipeline.
@@ -30,8 +30,8 @@ class ConfigGCNet(Config):
     if load_state:
         compile_mode = None
     experiment_id: int = seed  # experiment id for loading pretrained DNN
-    epoch_to_load = 8
-    iter_to_load = 14500
+    epoch_to_load = 9
+    iter_to_load = 1600
     model_pretrained: str = (
         f"epoch_{epoch_to_load}_iter_{iter_to_load}_model_best.pth.tar"  # pretrained file name, e.g: epoch_1_model.pth.tar
     )
