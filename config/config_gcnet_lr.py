@@ -8,8 +8,8 @@ from dataclasses_json import dataclass_json
 class ConfigGCNet(Config):
 
     model_name: str = "GC_Net_LR"
-    binocular_interaction: str = "bem"
-    seed: int = 11364
+    binocular_interaction: str = "default"
+    seed: int = 16476
 
     # Preserve physical eye identity throughout
     # the dataset/model pipeline.
@@ -39,9 +39,9 @@ class ConfigGCNet(Config):
     # bino_interaction: default, batch size 4
     epoch_iter_to_load_default: list[tuple[int, int]] = field(
         default_factory=lambda: [
-            (8, 14500),  # seed 1618
-            (9, 17000),  # seed 11364
-            (8, 15500),  # seed 16476
+            (9, 16000),  # seed 1618
+            (9, 17589),  # seed 11364
+            (9, 16500),  # seed 16476
             (9, 17000),  # seed 27829
             (9, 16000),  # seed 35154
             (9, 17000),  # seed 35744
@@ -58,9 +58,9 @@ class ConfigGCNet(Config):
     # bino_interaction: bem, batch size 4
     epoch_iter_to_load_bem: list[tuple[int, int]] = field(
         default_factory=lambda: [
-            (9, 16500),  # seed 1618
+            (9, 17500),  # seed 1618
             (9, 17589),  # seed 11364
-            (8, 15500),  # seed 16476
+            (9, 16000),  # seed 16476
             (9, 17000),  # seed 27829
             (9, 16500),  # seed 35154
             (9, 17000),  # seed 35744

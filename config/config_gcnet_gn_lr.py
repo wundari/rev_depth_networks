@@ -26,7 +26,7 @@ class ConfigGCNet(Config):
     ), "n_rds_each_disp must be divisible by batch_size_rds"
 
     # resume from checkpoint
-    load_state: bool = False
+    load_state: bool = True
     if load_state:
         compile_mode = None
     experiment_id: int = seed  # experiment id for loading pretrained DNN
@@ -39,9 +39,9 @@ class ConfigGCNet(Config):
     # bino_interaction: default, batch size 4
     epoch_iter_to_load_default: list[tuple[int, int]] = field(
         default_factory=lambda: [
-            (8, 14500),  # seed 1618
-            (9, 17000),  # seed 11364
-            (8, 15500),  # seed 16476
+            (9, 16000),  # seed 1618
+            (9, 17589),  # seed 11364
+            (9, 16500),  # seed 16476
             (9, 17000),  # seed 27829
             (9, 16000),  # seed 35154
             (9, 17000),  # seed 35744
@@ -60,7 +60,7 @@ class ConfigGCNet(Config):
         default_factory=lambda: [
             (9, 16500),  # seed 1618
             (9, 17589),  # seed 11364
-            (8, 15500),  # seed 16476
+            (9, 16000),  # seed 16476
             (9, 17000),  # seed 27829
             (9, 16500),  # seed 35154
             (9, 17000),  # seed 35744
