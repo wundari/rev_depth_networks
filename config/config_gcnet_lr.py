@@ -8,8 +8,16 @@ from dataclasses_json import dataclass_json
 class ConfigGCNet(Config):
 
     model_name: str = "GC_Net_LR"
-    binocular_interaction: str = "default"
-    seed: int = 1618
+    binocular_interaction: str = "bem"
+    seed: int = 11364
+
+    # Preserve physical eye identity throughout
+    # the dataset/model pipeline.
+    preserve_physical_eye_identity: bool = True
+
+    # Apply RandomShiftRotate and RGBShiftStereo
+    # only to the physical non-reference eye.
+    reference_aware_augmentation: bool = True
 
     # RDS parameters
     batch_size_rds: int = 8
@@ -18,7 +26,7 @@ class ConfigGCNet(Config):
     ), "n_rds_each_disp must be divisible by batch_size_rds"
 
     # resume from checkpoint
-    load_state: bool = True
+    load_state: bool = False
     if load_state:
         compile_mode = None
     experiment_id: int = seed  # experiment id for loading pretrained DNN

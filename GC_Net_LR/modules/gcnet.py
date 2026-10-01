@@ -82,7 +82,26 @@ class GCNet(nn.Module):
                 m.approximate = "tanh"
 
     def forward(self, x: NestedTensor):
+        """
+        Predict disparity using a per-sample physical-eye reference.
 
+        Physical eye identity is preserved:
+
+            x.left  = physical left eye
+            x.right = physical right eye
+
+        Reference convention:
+
+            ref = +1:
+                physical left eye is reference
+                -> right features are shifted/padded
+
+            ref = -1:
+                physical right eye is reference
+                -> left features are shifted/padded
+
+        Different examples in the same batch may have different refs.
+        """
         # extract features
         feat_left, feat_right = self.encoder(x)
 
@@ -100,7 +119,7 @@ class GCNet(nn.Module):
         #     logits = self.decoder(feat_right, feat_left)
         #     disp_pred = torch.sum(logits * self.disp_indices * -1, dim=1)
 
-        logits = self.decoder(feat_left, feat_right)
+        logits = self.decoder(feat_left, feat_right, x.ref)
         disp_pred = torch.sum(logits * self.disp_indices, dim=1)
 
         # logits = self.decoder(feat_right, feat_left)

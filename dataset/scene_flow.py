@@ -164,10 +164,18 @@ class SceneFlowFlyingThingsDataset(data.Dataset):
         # occ_data = natsorted(occ_data)
 
     def _augmentation(self):
+        reference_aware = getattr(
+            self.config,
+            "reference_aware_augmentation",
+            False,
+        )
         if self.split == "train":
             self.transformation = Compose(
                 [
-                    RandomShiftRotate(p=1.0),
+                    RandomShiftRotate(
+                        p=1.0,
+                        reference_aware=reference_aware,
+                    ),
                     RGBShiftStereo(p=1.0, p_asym=0.3),
                     OneOf(
                         [
@@ -240,11 +248,19 @@ class SceneFlowMonkaaDataset(data.Dataset):
         return
 
     def _augmentation(self):
-        ###
+        reference_aware = getattr(
+            self.config,
+            "reference_aware_augmentation",
+            False,
+        )
+
         if self.split == "train":
             self.transformation = Compose(
                 [
-                    RandomShiftRotate(p=1.0),
+                    RandomShiftRotate(
+                        p=1.0,
+                        reference_aware=reference_aware,
+                    ),
                     RGBShiftStereo(p=1.0, p_asym=0.3),
                     OneOf(
                         [
@@ -303,6 +319,11 @@ def _load_stereo_sample(dataset, idx):
         dataset.split,
         reference=reference,
         rng=rng,
+        preserve_physical_eye_identity=getattr(
+            dataset.config,
+            "preserve_physical_eye_identity",
+            False,
+        ),
     )
     result.pop("disp_right", None)
     return augment(result, dataset.transformation)

@@ -405,45 +405,21 @@ class StereoDecoder(nn.Module):
         b, c, h, w = feat_left.shape
         D = self.max_disp // 2
         volumes = []
-
-        if self.ref == 1:
-            for d in range(D):
-                right = F.pad(feat_right, (d, D - d))[..., D // 2 : D // 2 + w]
-                left = feat_left
-                if self.binocular_interaction == "default":
-                    channels = (left, right)
-                elif self.binocular_interaction == "bem":
-                    channels = (left * right / c, (left.square() + right.square()) / c)
-                elif self.binocular_interaction == "cmm":
-                    product = left * right / c
-                    channels = (product, F.relu(product))
-                elif self.binocular_interaction == "sum_diff":
-                    channels = (left + right, left - right)
-                else:
-                    raise ValueError(
-                        f"Unknown interaction: {self.binocular_interaction}"
-                    )
-                volumes.append(torch.cat(channels, dim=1))
-
-        elif self.ref == -1:
-            for d in range(D):
-                left = F.pad(feat_left, (d, D - d))[..., D // 2 : D // 2 + w]
-                right = feat_right
-                if self.binocular_interaction == "default":
-                    channels = (left, right)
-                elif self.binocular_interaction == "bem":
-                    channels = (left * right / c, (left.square() + right.square()) / c)
-                elif self.binocular_interaction == "cmm":
-                    product = left * right / c
-                    channels = (product, F.relu(product))
-                elif self.binocular_interaction == "sum_diff":
-                    channels = (left + right, left - right)
-                else:
-                    raise ValueError(
-                        f"Unknown interaction: {self.binocular_interaction}"
-                    )
-                volumes.append(torch.cat(channels, dim=1))
-
+        for d in range(D):
+            right = F.pad(feat_right, (d, D - d))[..., D // 2 : D // 2 + w]
+            left = feat_left
+            if self.binocular_interaction == "default":
+                channels = (left, right)
+            elif self.binocular_interaction == "bem":
+                channels = (left * right / c, (left.square() + right.square()) / c)
+            elif self.binocular_interaction == "cmm":
+                product = left * right / c
+                channels = (product, F.relu(product))
+            elif self.binocular_interaction == "sum_diff":
+                channels = (left + right, left - right)
+            else:
+                raise ValueError(f"Unknown interaction: {self.binocular_interaction}")
+            volumes.append(torch.cat(channels, dim=1))
         return torch.stack(volumes, dim=2)
 
     def forward(self, feat_left: Tensor, feat_right: Tensor):

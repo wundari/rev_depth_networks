@@ -31,7 +31,7 @@ class Config:
 
     # training params
     batch_size: int = 4
-    batch_size_val: int = 8
+    batch_size_val: int = 4
     num_workers: int = 4  # the number of cpu cores for train dataloader
     eval_num_workers: int = 4  # the number of cpu cores for val dataloader
     persistent_workers: bool = True

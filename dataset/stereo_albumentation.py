@@ -95,6 +95,7 @@ def random_crop(
     split,
     reference=None,
     rng=None,
+    preserve_physical_eye_identity=False,
 ):
     """Uniform valid stereo crop, with the original signed disparity convention.
 
@@ -118,23 +119,64 @@ def random_crop(
     if not np.isfinite(shift):
         raise ValueError("Disparity shift must be finite")
     offset = int(shift)
+
+    # x denotes coordinate in REFERENCE view
     delta = reference * offset
-    low, high = max(0, delta), min(w - cw, w - cw + delta)
+
+    low = max(0, delta)
+    high = min(w - cw, w - cw + delta)
     if low > high:
         raise ValueError("No valid stereo crop for this width and disparity shift")
 
+    # selected reference disparity map
     x = rng.randint(low, high)
     y = rng.randint(0, h - ch)
     source = input_data["disp"] if reference == 1 else input_data["disp_right"]
     if source.shape != (h, w):
         raise ValueError("Selected disparity map must match the source image")
 
-    left, right = input_data["left"], input_data["right"]
-    anchor, other = (left, right) if reference == 1 else (right, left)
-    input_data["left"] = crop(anchor, x, y, x + cw, y + ch)
-    input_data["right"] = crop(other, x - delta, y, x - delta + cw, y + ch)
+    physical_left = input_data["left"]
+    physical_right = input_data["right"]
 
-    # Keep the original full-image width as the clipping bound.
+    # =====================================================
+    # preserve physical eye identity
+    # =====================================================
+    if preserve_physical_eye_identity:
+        if reference == 1:  # left if the reference
+            x_left = x
+            x_right = x - delta
+
+        else:  # right becomes the reference
+            x_right = x
+            x_left = x - delta
+
+        input_data["left"] = crop(
+            physical_left,
+            x_left,
+            y,
+            x_left + cw,
+            y + ch,
+        )
+
+        input_data["right"] = crop(
+            physical_right,
+            x_right,
+            y,
+            x_right + cw,
+            y + ch,
+        )
+    else:
+        anchor, other = (
+            (physical_left, physical_right)
+            if reference == 1
+            else (physical_right, physical_left)
+        )
+        input_data["left"] = crop(anchor, x, y, x + cw, y + ch)
+        input_data["right"] = crop(other, x - delta, y, x - delta + cw, y + ch)
+
+    # -----------------------------------------------------
+    # Ground truth always belongs to selected reference eye
+    # -----------------------------------------------------
     shifted = crop(source, x, y, x + cw, y + ch) - offset
     input_data["disp"] = np.minimum(shifted, w)
     input_data["ref"] = reference
@@ -508,40 +550,188 @@ Right Image Only
 """
 
 
-class RandomShiftRotate(RightOnlyTransform):
-    """Randomly apply vertical translate and rotate the input.
-    Args:
-        max_shift (float): maximum shift in pixels along vertical direction. Default: 1.5.
-        max_rotation (float): maximum rotation in degree. Default: 0.2.
-        p (float): probability of applying the transform. Default: 0.5.
-    Targets:
-        image, mask
-    Image types:
-        uint8, float32
+# class RandomShiftRotate(RightOnlyTransform):
+#     """Randomly apply vertical translate and rotate the input.
+#     Args:
+#         max_shift (float): maximum shift in pixels along vertical direction. Default: 1.5.
+#         max_rotation (float): maximum rotation in degree. Default: 0.2.
+#         p (float): probability of applying the transform. Default: 0.5.
+#     Targets:
+#         image, mask
+#     Image types:
+#         uint8, float32
+#     """
+
+#     def __init__(self, max_shift=1.5, max_rotation=0.2, always_apply=False, p=1.0):
+#         super(RandomShiftRotate, self).__init__(always_apply, p)
+#         self.max_shift = max_shift
+#         self.max_rotation = max_rotation
+
+#     def get_params(self):
+#         return {
+#             "shift": self.py_random.uniform(-self.max_shift, self.max_shift),
+#             "rotation": self.py_random.uniform(-self.max_rotation, self.max_rotation),
+#         }
+
+#     def apply(self, img, shift=0.0, rotation=0.0, **params):
+#         h, w = img.shape[:2]
+#         matrix = np.float32(
+#             [
+#                 [np.cos(np.deg2rad(rotation)), -np.sin(np.deg2rad(rotation)), 0],
+#                 [np.sin(np.deg2rad(rotation)), np.cos(np.deg2rad(rotation)), shift],
+#             ]
+#         )
+
+#         return cv2.warpAffine(
+#             img, matrix, (w, h), cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE
+#         )
+
+
+class RandomShiftRotate(StereoTransform):
+    """
+    Random vertical shift/rotation.
+
+    If reference_aware=False:
+        preserve legacy behavior:
+        transform only dictionary key "right".
+
+    If reference_aware=True:
+        transform only the physical NON-REFERENCE eye.
+
+        ref = +1 -> transform right
+        ref = -1 -> transform left
     """
 
-    def __init__(self, max_shift=1.5, max_rotation=0.2, always_apply=False, p=1.0):
-        super(RandomShiftRotate, self).__init__(always_apply, p)
+    def __init__(
+        self,
+        max_shift=1.5,
+        max_rotation=0.2,
+        always_apply=False,
+        p=1.0,
+        reference_aware=False,
+    ):
+        super().__init__(
+            always_apply=always_apply,
+            p=p,
+        )
+
         self.max_shift = max_shift
         self.max_rotation = max_rotation
+        self.reference_aware = reference_aware
 
-    def get_params(self):
+    @property
+    def targets(self):
         return {
-            "shift": self.py_random.uniform(-self.max_shift, self.max_shift),
-            "rotation": self.py_random.uniform(-self.max_rotation, self.max_rotation),
+            "left": self.apply_left,
+            "right": self.apply_right,
         }
 
-    def apply(self, img, shift=0.0, rotation=0.0, **params):
+    @property
+    def targets_as_params(self):
+        return ["left", "right"]
+
+    def get_params_dependent_on_data(
+        self,
+        params,
+        data,
+    ):
+        reference = int(data.get("ref", 1))
+
+        return {
+            "shift": self.py_random.uniform(
+                -self.max_shift,
+                self.max_shift,
+            ),
+            "rotation": self.py_random.uniform(
+                -self.max_rotation,
+                self.max_rotation,
+            ),
+            "reference": reference,
+        }
+
+    @staticmethod
+    def _warp(
+        img,
+        shift,
+        rotation,
+    ):
         h, w = img.shape[:2]
+
         matrix = np.float32(
             [
-                [np.cos(np.deg2rad(rotation)), -np.sin(np.deg2rad(rotation)), 0],
-                [np.sin(np.deg2rad(rotation)), np.cos(np.deg2rad(rotation)), shift],
+                [
+                    np.cos(np.deg2rad(rotation)),
+                    -np.sin(np.deg2rad(rotation)),
+                    0,
+                ],
+                [
+                    np.sin(np.deg2rad(rotation)),
+                    np.cos(np.deg2rad(rotation)),
+                    shift,
+                ],
             ]
         )
 
         return cv2.warpAffine(
-            img, matrix, (w, h), cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE
+            img,
+            matrix,
+            (w, h),
+            cv2.INTER_CUBIC,
+            borderMode=cv2.BORDER_REPLICATE,
+        )
+
+    def apply_left(
+        self,
+        img,
+        shift=0.0,
+        rotation=0.0,
+        reference=1,
+        **params,
+    ):
+
+        if self.reference_aware:
+
+            # physical left is non-reference only
+            # when right is reference
+            if reference == -1:
+                return self._warp(
+                    img,
+                    shift,
+                    rotation,
+                )
+
+            return img
+
+        # legacy mode:
+        # left was never transformed
+        return img
+
+    def apply_right(
+        self,
+        img,
+        shift=0.0,
+        rotation=0.0,
+        reference=1,
+        **params,
+    ):
+
+        if self.reference_aware:
+            # physical right is non-reference only
+            # when left is reference
+            if reference == 1:
+                return self._warp(
+                    img,
+                    shift,
+                    rotation,
+                )
+
+            return img
+
+        # legacy behavior
+        return self._warp(
+            img,
+            shift,
+            rotation,
         )
 
 

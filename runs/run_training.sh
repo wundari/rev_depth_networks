@@ -61,7 +61,7 @@ model_name="GC_Net_LR"
 config_file="config_gcnet_lr"
 train_file="train_gcnet_lr"
 interactions=("bem" "default")
-seeds=(1618 11364 16476 27829 35154)
+seeds=(1618 11364 16476)
 for interaction in "${interactions[@]}"; do
     for seed in "${seeds[@]}"; do
         sed -i -E \

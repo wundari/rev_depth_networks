@@ -83,9 +83,6 @@ class GCNet(nn.Module):
 
     def forward(self, x: NestedTensor):
 
-        # record reference
-        self.ref = x.ref
-
         # extract features
         feat_left, feat_right = self.encoder(x)
 
