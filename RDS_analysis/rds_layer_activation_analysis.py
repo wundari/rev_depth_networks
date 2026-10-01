@@ -211,11 +211,12 @@ class RDS_LayerAct(RDSAnalysis):
                 model.decoder.layer3[0],
                 model.decoder.layer4,
             ]
-        elif (
-            self.model_name == "GC_Net"
-            or self.model_name == "GC_Net_L"
-            or self.model_name == "GC_Net_LR"
-        ):
+        else:  # GC_Net variants
+            # elif (
+            #     self.model_name == "GC_Net"
+            #     or self.model_name == "GC_Net_L"
+            #     or self.model_name == "GC_Net_LR"
+            # ):
             self.layer_name = [
                 *(f"layer{i}" for i in range(19, 33)),
                 *(f"layer{i}a" for i in range(33, 37)),
@@ -229,8 +230,8 @@ class RDS_LayerAct(RDSAnalysis):
                 )
                 for name in self.layer_name
             ]
-        else:
-            raise ValueError(f"Unsupported model for layer analysis: {self.model_name}")
+        # else:
+        #     raise ValueError(f"Unsupported model for layer analysis: {self.model_name}")
 
     def _create_layer_act_dir(self):
 
