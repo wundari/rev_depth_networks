@@ -499,7 +499,8 @@ class RDSAnalysis(EngineBase):
             # Generate disparity direction. Swap left/right per sample rather
             # than per batch, so correctness does not depend on batch boundaries.
             # generate disparity direction
-            ref = disps / 10.0
+            # ref = disps / 10
+            ref = torch.ones(len(disps), dtype=torch.float32)
 
             # build nested tensor
             input_data = NestedTensor(

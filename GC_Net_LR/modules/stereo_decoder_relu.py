@@ -345,168 +345,6 @@ class StereoDecoder(nn.Module):
             output_padding=1,
         )
 
-    # def build_costVol(
-    #     self,
-    #     feat_left: Tensor,
-    #     feat_right: Tensor,
-    #     ref: Tensor,
-    # ):
-    #     if feat_left.shape != feat_right.shape:
-    #         raise ValueError("Left/right feature shapes must match")
-
-    #     if feat_left.ndim != 4:
-    #         raise ValueError("Expected [B, C, H, W] feature tensors")
-
-    #     b, c, h, w = feat_left.shape
-
-    #     # -----------------------------------------------------
-    #     # Reference vector
-    #     # -----------------------------------------------------
-    #     ref = ref.reshape(-1)
-
-    #     if ref.shape[0] != b:
-    #         raise ValueError(
-    #             f"Expected {b} reference values, " f"but got {ref.shape[0]}"
-    #         )
-
-    #     if ref.device.type == "cpu" and not torch.all((ref == 1) | (ref == -1)):
-    #         raise ValueError("ref must contain only +1 or -1")
-
-    #     ref = ref.to(
-    #         device=feat_left.device,
-    #         non_blocking=True,
-    #     )
-
-    #     # [B, 1, 1, 1]
-    #     left_is_reference = (ref == 1).view(b, 1, 1, 1)
-
-    #     D = self.max_disp // 2
-
-    #     # -----------------------------------------------------
-    #     # Choose fixed/reference and moving/non-reference
-    #     # -----------------------------------------------------
-
-    #     fixed = torch.where(
-    #         left_is_reference,
-    #         feat_left,
-    #         feat_right,
-    #     )
-
-    #     moving = torch.where(
-    #         left_is_reference,
-    #         feat_right,
-    #         feat_left,
-    #     )
-
-    #     # -----------------------------------------------------
-    #     # Pad moving features ONCE.
-    #     #
-    #     # We want to reproduce:
-    #     #
-    #     # F.pad(moving, (d, D-d))
-    #     #     [..., D//2 : D//2+w]
-    #     #
-    #     # which corresponds to:
-    #     #
-    #     # moving[i + D//2 - d]
-    #     #
-    #     # Maximum negative shift:
-    #     #     D - 1 - D//2
-    #     #
-    #     # Maximum positive shift:
-    #     #     D//2
-    #     # -----------------------------------------------------
-
-    #     pad_left = D - 1 - D // 2
-    #     pad_right = D // 2
-
-    #     moving_padded = F.pad(
-    #         moving,
-    #         (pad_left, pad_right),
-    #     )
-
-    #     volumes = []
-
-    #     for d in range(D):
-
-    #         # IMPORTANT:
-    #         # disparity index runs in reverse through
-    #         # the pre-padded tensor.
-    #         start = D - 1 - d
-
-    #         shifted = moving_padded[
-    #             ...,
-    #             start : start + w,
-    #         ]
-
-    #         # ---------------------------------------------
-    #         # Restore physical left/right roles
-    #         # ---------------------------------------------
-
-    #         left = torch.where(
-    #             left_is_reference,
-    #             fixed,
-    #             shifted,
-    #         )
-
-    #         right = torch.where(
-    #             left_is_reference,
-    #             shifted,
-    #             fixed,
-    #         )
-
-    #         # ---------------------------------------------
-    #         # Binocular interaction
-    #         # ---------------------------------------------
-
-    #         if self.binocular_interaction == "default":
-
-    #             channels = (
-    #                 left,
-    #                 right,
-    #             )
-
-    #         elif self.binocular_interaction == "bem":
-
-    #             channels = (
-    #                 left * right / c,
-    #                 (left.square() + right.square()) / c,
-    #             )
-
-    #         elif self.binocular_interaction == "cmm":
-
-    #             product = left * right / c
-
-    #             channels = (
-    #                 product,
-    #                 F.relu(product),
-    #             )
-
-    #         elif self.binocular_interaction == "sum_diff":
-
-    #             channels = (
-    #                 left + right,
-    #                 left - right,
-    #             )
-
-    #         else:
-
-    #             raise ValueError(
-    #                 "Unknown binocular interaction: " f"{self.binocular_interaction}"
-    #             )
-
-    #         volumes.append(
-    #             torch.cat(
-    #                 channels,
-    #                 dim=1,
-    #             )
-    #         )
-
-    #     return torch.stack(
-    #         volumes,
-    #         dim=2,
-    #     )
-
     def build_costVol(
         self,
         feat_left: Tensor,
@@ -517,7 +355,6 @@ class StereoDecoder(nn.Module):
         Build a reference-dependent cost volume.
 
         Physical eye identity is preserved:
-
             feat_left  = physical left-eye features
             feat_right = physical right-eye features
 
@@ -536,7 +373,6 @@ class StereoDecoder(nn.Module):
 
         if feat_left.shape != feat_right.shape:
             raise ValueError("Left/right feature shapes must match")
-
         if feat_left.ndim != 4:
             raise ValueError("Expected [B, C, H, W] feature tensors")
 
@@ -546,12 +382,10 @@ class StereoDecoder(nn.Module):
         # Validate reference vector
         # -----------------------------------------------------
         ref = ref.reshape(-1).to(device=feat_left.device)
-
         if ref.shape[0] != b:
             raise ValueError(
                 f"Expected {b} reference values, " f"but got {ref.shape[0]}"
             )
-
         if not torch.all((ref == 1) | (ref == -1)):
             raise ValueError("ref must contain only +1 or -1")
 

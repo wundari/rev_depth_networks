@@ -718,7 +718,8 @@ class RDS_LayerAct(RDSAnalysis):
             # (inputs_left, inputs_right, disps) = next(iter(rds_bank))
 
             # generate disparity direction
-            ref = disps / 10.0
+            # ref = disps / 10.0
+            ref = torch.ones(len(disps), dtype=torch.float32)
 
             # build nested tensor
             input_data = NestedTensor(

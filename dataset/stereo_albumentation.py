@@ -121,7 +121,8 @@ def random_crop(
     offset = int(shift)
 
     # x denotes coordinate in REFERENCE view
-    delta = reference * offset
+    # delta = reference * offset
+    delta = offset
 
     low = max(0, delta)
     high = min(w - cw, w - cw + delta)
@@ -165,6 +166,7 @@ def random_crop(
             x_right + cw,
             y + ch,
         )
+
     else:
         anchor, other = (
             (physical_left, physical_right)

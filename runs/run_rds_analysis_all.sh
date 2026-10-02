@@ -1,0 +1,4 @@
+python -m scripts.analysis.run_ga_layer_activation_analysis_gcnet_lr
+python -m scripts.analysis.run_ga_layer_activation_analysis_gcnet_gn_lr
+python -m scripts.analysis.run_ga_rds_gcnet_lr
+python -m scripts.analysis.run_ga_rds_gcnet_gn_lr
