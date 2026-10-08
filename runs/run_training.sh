@@ -60,8 +60,8 @@ set -euo pipefail
 model_name="GC_Net_LR"
 config_file="config_gcnet_lr"
 train_file="train_gcnet_lr"
-interactions=("bem" "default")
-seeds=(1618 11364 16476)
+interactions=("default" "bem" "cmm" "sum_diff")
+seeds=(35744 36675)
 for interaction in "${interactions[@]}"; do
     for seed in "${seeds[@]}"; do
         sed -i -E \
@@ -70,9 +70,10 @@ for interaction in "${interactions[@]}"; do
             config/${config_file}.py
 
         echo "Training $model_name: interaction=$interaction, seed=$seed, config_file=$config_file, train_file=$train_file"
-        python -m scripts.training.${train_file}
+        python -m scripts.training.${train_file} || break 2
     done
 done
 
 # run rds analysis after all training runs succeed
-python -m scripts.analysis.run_ga_rds_gcnet_lr
+# python -m scripts.analysis.run_ga_rds_gcnet_lr
+# python -m scripts.analysis.run_ga_layer_activation_analysis_gcnet_lr

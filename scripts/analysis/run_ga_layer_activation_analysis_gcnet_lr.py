@@ -15,7 +15,7 @@ def main():
     )
 
     # interactions = rdsl.config.interactions
-    interactions = ["bem", "default"]
+    interactions = ["default"]
     save_flag = True
 
     for interaction in interactions:
@@ -44,14 +44,26 @@ def main():
 
             # Cosine-similarity
             for dotDens in rdsl.dotDens_list:
-                result = rdsl.compute_cosine_similarity_layers(
+                result = rdsl.compute_cosineSim_layers(
+                    dotDens=dotDens,
+                    split_train=0.8,
+                    n_bootstrap=rdsl.n_bootstrap,
+                )
+
+            # Cosine-similarity between disparity profiles
+            # (layer activations are averaged across feature channels)
+            for dotDens in rdsl.dotDens_list:
+                result = rdsl.compute_cosineSim_disp_layers(
                     dotDens=dotDens,
                     split_train=0.8,
                     n_bootstrap=rdsl.n_bootstrap,
                 )
 
             # plot cosine similarity
-            rdsl.plot_cosine_similarity(save_flag)
+            mode = None
+            rdsl.plot_cosineSim(mode, save_flag)
+            mode = "disp"
+            rdsl.plot_cosineSim(mode, save_flag)
 
             # Cross-decoding
             rdsl.compute_xDecode_layers(split_train=0.8)

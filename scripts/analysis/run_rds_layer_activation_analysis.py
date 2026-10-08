@@ -29,7 +29,7 @@ def main():
 
     # Cosine-similarity
     for dotDens in rdsl.dotDens_list:
-        result = rdsl.compute_cosine_similarity_layers(
+        result = rdsl.compute_cosineSim_layers(
             dotDens=dotDens,
             split_train=0.8,
             n_bootstrap=rdsl.n_bootstrap,
@@ -38,7 +38,7 @@ def main():
     # plot
     save_flag = True
 
-    rdsl.plot_cosine_similarity(save_flag)
+    rdsl.plot_cosineSim(save_flag)
 
     # all dot density in one image
     rdsl.plotLine_xDecode_across_layers(save_flag)

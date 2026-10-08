@@ -63,8 +63,8 @@ class _XDecodeState:
             dotDens,
         )
 
-    def _split_groups(self, n_samples_per_cond):
-        return RDS_LayerAct._split_groups(self, n_samples_per_cond)
+    def _split_groups(self, n_samples_per_rds_cond):
+        return RDS_LayerAct._split_groups(self, n_samples_per_rds_cond)
 
 
 def _xdecode_density_process(
@@ -244,6 +244,24 @@ class RDS_LayerAct(RDSAnalysis):
 
     # load layer activation
     def _load_layer_activation(self, dotDens: float):
+        """
+
+        Returns:
+            data = {"ards": {layer19: [n_samples_per_rds_cond, n_feat],
+                             layer20: [n_samples_per_rds_cond, n_feat],
+                             ...},
+                    "hmrds": {layer19: [n_samples_per_rds_cond, n_feat],
+                              layer20: [n_samples_per_rds_cond, n_feat],
+                              ...},
+                    ...}
+
+            labels = {"ards": [n_samples_per_rds_cond],
+                      "hmrds": [n_samples_per_rds_cond],
+                      "crds": [n_samples_per_rds_cond]}
+
+            ps: n_samples_per_rds_cond = len(self.disp_ct_pix_list) * self.n_rds_each_disp
+                n_feat = n_feature_channels * n_disp_channels
+        """
         return load_layer_activation(
             self.layer_act_dir,
             self._metadata(),
@@ -403,7 +421,7 @@ class RDS_LayerAct(RDSAnalysis):
             value = (
                 self._pool_activation(output.detach()) if pooled else output.detach()
             )
-            # copy now, before a later in-place ReLU can change it.
+            # copy before a later in-place ReLU can change it.
             outputs[module].append(
                 value.to(device="cpu", dtype=torch.float32, copy=True)
             )
@@ -544,17 +562,18 @@ class RDS_LayerAct(RDSAnalysis):
         dotDens_list = tuple(float(x) for x in self.dotDens_list)
         conditions = [(m, d) for m in dotMatch_list for d in dotDens_list]
         expected = np.repeat(self.disp_ct_pix_list, self.n_rds_each_disp)
-        n_samples_per_cond = len(
+        n_samples_per_rds_cond = len(
             expected
         )  # the number of RDSs for each dotMatch and dotDens
+        # = n_samples_per_rds_type
         # = len(self.disp_ct_pix_list) * self.n_rds_each_disp
 
         if (
             not conditions
             or tuple(dataset.condition_shape)
-            != (len(dotMatch_list), len(dotDens_list), n_samples_per_cond)
+            != (len(dotMatch_list), len(dotDens_list), n_samples_per_rds_cond)
             or len(dataset.datasets) != len(conditions)
-            or len(dataset) != n_samples_per_cond * len(conditions)
+            or len(dataset) != n_samples_per_rds_cond * len(conditions)
         ):
             raise ValueError("Bank layout/sample counts do not match this analysis")
 
@@ -565,7 +584,7 @@ class RDS_LayerAct(RDSAnalysis):
             )
 
         for data in dataset.datasets:
-            if len(data) != n_samples_per_cond or not np.array_equal(
+            if len(data) != n_samples_per_rds_cond or not np.array_equal(
                 data.rds_label, expected
             ):
                 raise ValueError(
@@ -593,12 +612,12 @@ class RDS_LayerAct(RDSAnalysis):
         self.rds_bank_seed = int(dataset.bank_seed)
         self._bank_context = dict(
             conditions=conditions,
-            samples_per_condition=n_samples_per_cond,
+            samples_per_condition=n_samples_per_rds_cond,
             batch_size=self.batch_size_rds,
             reference=1,
         )
 
-        return conditions, n_samples_per_cond
+        return conditions, n_samples_per_rds_cond
 
     def _metadata(self):
         return dict(
@@ -650,32 +669,32 @@ class RDS_LayerAct(RDSAnalysis):
         # | 37, before squeezing | `[B, 1, 192, 256, 512]` |
 
         # layer_act_dict = {
-        #     "layer19": np.empty((n_samples_per_cond, 128, 256), dtype=np.float32),
-        #     "layer20": np.empty((n_samples_per_cond, 128, 256), dtype=np.float32),
-        #     "layer21": np.empty((n_samples_per_cond, 64, 128), dtype=np.float32),
-        #     "layer22": np.empty((n_samples_per_cond, 64, 128), dtype=np.float32),
-        #     "layer23": np.empty((n_samples_per_cond, 64, 128), dtype=np.float32),
-        #     "layer24": np.empty((n_samples_per_cond, 32, 64), dtype=np.float32),
-        #     "layer25": np.empty((n_samples_per_cond, 32, 64), dtype=np.float32),
-        #     "layer26": np.empty((n_samples_per_cond, 32, 64), dtype=np.float32),
-        #     "layer27": np.empty((n_samples_per_cond, 16, 32), dtype=np.float32),
-        #     "layer28": np.empty((n_samples_per_cond, 16, 32), dtype=np.float32),
-        #     "layer29": np.empty((n_samples_per_cond, 16, 32), dtype=np.float32),
-        #     "layer30": np.empty((n_samples_per_cond, 8, 16), dtype=np.float32),
-        #     "layer31": np.empty((n_samples_per_cond, 8, 16), dtype=np.float32),
-        #     "layer32": np.empty((n_samples_per_cond, 8, 16), dtype=np.float32),
-        #     "layer33a": np.empty((n_samples_per_cond, 16, 32), dtype=np.float32),
-        #     "layer34a": np.empty((n_samples_per_cond, 32, 64), dtype=np.float32),
-        #     "layer35a": np.empty((n_samples_per_cond, 64, 128), dtype=np.float32),
-        #     "layer36a": np.empty((n_samples_per_cond, 128, 256), dtype=np.float32),
-        #     "layer37": np.empty((n_samples_per_cond, 256, 512), dtype=np.float32),
+        #     "layer19": np.empty((n_samples_per_rds_cond, 128, 256), dtype=np.float32),
+        #     "layer20": np.empty((n_samples_per_rds_cond, 128, 256), dtype=np.float32),
+        #     "layer21": np.empty((n_samples_per_rds_cond, 64, 128), dtype=np.float32),
+        #     "layer22": np.empty((n_samples_per_rds_cond, 64, 128), dtype=np.float32),
+        #     "layer23": np.empty((n_samples_per_rds_cond, 64, 128), dtype=np.float32),
+        #     "layer24": np.empty((n_samples_per_rds_cond, 32, 64), dtype=np.float32),
+        #     "layer25": np.empty((n_samples_per_rds_cond, 32, 64), dtype=np.float32),
+        #     "layer26": np.empty((n_samples_per_rds_cond, 32, 64), dtype=np.float32),
+        #     "layer27": np.empty((n_samples_per_rds_cond, 16, 32), dtype=np.float32),
+        #     "layer28": np.empty((n_samples_per_rds_cond, 16, 32), dtype=np.float32),
+        #     "layer29": np.empty((n_samples_per_rds_cond, 16, 32), dtype=np.float32),
+        #     "layer30": np.empty((n_samples_per_rds_cond, 8, 16), dtype=np.float32),
+        #     "layer31": np.empty((n_samples_per_rds_cond, 8, 16), dtype=np.float32),
+        #     "layer32": np.empty((n_samples_per_rds_cond, 8, 16), dtype=np.float32),
+        #     "layer33a": np.empty((n_samples_per_rds_cond, 16, 32), dtype=np.float32),
+        #     "layer34a": np.empty((n_samples_per_rds_cond, 32, 64), dtype=np.float32),
+        #     "layer35a": np.empty((n_samples_per_rds_cond, 64, 128), dtype=np.float32),
+        #     "layer36a": np.empty((n_samples_per_rds_cond, 128, 256), dtype=np.float32),
+        #     "layer37": np.empty((n_samples_per_rds_cond, 256, 512), dtype=np.float32),
         # }
-        # n_samples_per_cond: the number of RDSs for each dotMatch and dotDens
+        # n_samples_per_rds_cond: the number of RDSs for each dotMatch and dotDens
         # = len(disp_ct_pix_list) * n_rds_each_disp
 
         # validate rds_bank ordering, labels, batch settings, and stimulus metadata.
         # Also selects the separate bank-analysis output directory.
-        conditions, n_samples_per_cond = self._configure_activation_bank(
+        conditions, n_samples_per_rds_cond = self._configure_activation_bank(
             rds_bank,
             background_flag=background_flag,
             pedestal_flag=pedestal_flag,
@@ -685,11 +704,11 @@ class RDS_LayerAct(RDSAnalysis):
         #     for dotMatch in self.dotMatch_list
         #     for dotDens in self.dotDens_list
         # ]
-        # n_samples_per_cond = (
+        # n_samples_per_rds_cond = (
         #     len(self.disp_ct_pix_list) * self.n_rds_each_disp
         # )  # the number of RDSs for each dotMatch and dotDens
 
-        if n_samples_per_cond % self.batch_size_rds != 0:
+        if n_samples_per_rds_cond % self.batch_size_rds != 0:
             raise ValueError(
                 f"n_rds_each_disp ({self.n_rds_each_disp} must be divisible by RDS batch size {self.batch_size_rds}.\n"
                 "Please change the batch size of RDS!"
@@ -698,14 +717,13 @@ class RDS_LayerAct(RDSAnalysis):
         if len(self.layer_name) != len(self.target_list):
             raise ValueError("layer_name and target_list must have equal lengths")
 
-        # pre-allocate array
+        # pre-allocate buffer for layer activations and target disparity labels
         expected_disp_labels = np.repeat(
             self.disp_ct_pix_list, self.n_rds_each_disp
         )  # for cross-checking the order of disparity label in the rds dataset
-        disp_labels = np.empty(n_samples_per_cond, dtype=np.int8)
+        disp_labels = np.empty(n_samples_per_rds_cond, dtype=np.int8)
         total = len(rds_bank.dataset)
         features = {}
-        # paths = {}
 
         # iterate through the data and compute activations
         tepoch = tqdm(
@@ -747,7 +765,7 @@ class RDS_LayerAct(RDSAnalysis):
                 input_data, self.target_list, pooled=True, include_prediction=True
             )
 
-            # collect layer activation temporarily until it reaches n_samples_per_cond
+            # collect layer activation temporarily until it reaches n_samples_per_rds_cond
             id_start = count
             id_end = id_start + self.batch_size_rds
             for layer_name, module in zip(
@@ -767,7 +785,7 @@ class RDS_LayerAct(RDSAnalysis):
 
                 if layer_name not in features:
                     features[layer_name] = np.empty(
-                        (n_samples_per_cond, act.shape[1]), dtype=np.float32
+                        (n_samples_per_rds_cond, act.shape[1]), dtype=np.float32
                     )
                 features[layer_name][id_start:id_end] = act
 
@@ -778,16 +796,16 @@ class RDS_LayerAct(RDSAnalysis):
             count += self.batch_size_rds
             global_count += self.batch_size_rds
 
-            ## when buffer reaches n_samples_per_cond,
+            ## when buffer reaches n_samples_per_rds_cond,
             # grouping layer activation according to dotMatch and dotDens then save
-            if count % n_samples_per_cond == 0:
+            if count % n_samples_per_rds_cond == 0:
 
                 # ensure the order of disparity labels
                 if not np.array_equal(disp_labels, expected_disp_labels):
                     raise ValueError("Condition labels do not match the expected order")
 
                 # safe
-                rds_cond_idx = global_count // n_samples_per_cond - 1
+                rds_cond_idx = global_count // n_samples_per_rds_cond - 1
                 dotMatch, dotDens = conditions[rds_cond_idx]
                 suffix = f"dotDens_{dotDens:.2f}_dotMatch_{dotMatch:.2f}.npy"
                 path = Path(self.layer_act_dir) / ("act_rds_" + suffix)
@@ -803,7 +821,7 @@ class RDS_LayerAct(RDSAnalysis):
 
                 # reset buffer and counter
                 features = {}
-                disp_labels = np.empty(n_samples_per_cond, dtype=np.int8)
+                disp_labels = np.empty(n_samples_per_rds_cond, dtype=np.int8)
                 count = 0
 
         if global_count != total:
@@ -873,10 +891,10 @@ class RDS_LayerAct(RDSAnalysis):
     #     """
 
     #     # dotDens = 0.4
-    #     n_samples_per_cond = (
+    #     n_samples_per_rds_cond = (
     #         2 * self.n_rds_each_disp
     #     )  # number of rds in total, the "2" comes from near and far disp
-    #     n_train = int(split_train * n_samples_per_cond)  # number of training dataset
+    #     n_train = int(split_train * n_samples_per_rds_cond)  # number of training dataset
 
     #     # load layer activation data and target disparity label
     #     # ards
@@ -945,9 +963,9 @@ class RDS_LayerAct(RDSAnalysis):
     #     for i, layer in enumerate(self.layer_name):
 
     #         # Pre-compute row-averaged activations for each sample
-    #         crds_avg = layer_act_crds[layer].mean(axis=-2)  # [n_samples_per_cond, w]
-    #         ards_avg = layer_act_ards[layer].mean(axis=-2)  # [n_samples_per_cond, w]
-    #         hmrds_avg = layer_act_hmrds[layer].mean(axis=-2)  # [n_samples_per_cond, w]
+    #         crds_avg = layer_act_crds[layer].mean(axis=-2)  # [n_samples_per_rds_cond, w]
+    #         ards_avg = layer_act_ards[layer].mean(axis=-2)  # [n_samples_per_rds_cond, w]
+    #         hmrds_avg = layer_act_hmrds[layer].mean(axis=-2)  # [n_samples_per_rds_cond, w]
 
     #         # compute global mean and std for normalization across batch with crds
     #         x_mean = crds_avg.mean()  # axis=0, keepdims=True)  # [1, w]
@@ -956,9 +974,9 @@ class RDS_LayerAct(RDSAnalysis):
     #         # x_std[x_std == 0] = 1e-6
 
     #         # standardize/normalize activations across samples
-    #         crds_norm = (crds_avg - x_mean) / x_std  # [n_samples_per_cond, w]
-    #         ards_norm = (ards_avg - x_mean) / x_std  # [n_samples_per_cond, w]
-    #         hmrds_norm = (hmrds_avg - x_mean) / x_std  # [n_samples_per_cond, w]
+    #         crds_norm = (crds_avg - x_mean) / x_std  # [n_samples_per_rds_cond, w]
+    #         ards_norm = (ards_avg - x_mean) / x_std  # [n_samples_per_rds_cond, w]
+    #         hmrds_norm = (hmrds_avg - x_mean) / x_std  # [n_samples_per_rds_cond, w]
 
     #         # bootstrap loop
     #         for i_bootstrap in range(n_bootstrap):
@@ -969,7 +987,7 @@ class RDS_LayerAct(RDSAnalysis):
     #             )
 
     #             # generate random numbers for splitting train and test dataset
-    #             idx = np.random.permutation(n_samples_per_cond)
+    #             idx = np.random.permutation(n_samples_per_rds_cond)
     #             idx_train = idx[:n_train]
     #             idx_test = idx[n_train:]
 
@@ -1013,12 +1031,16 @@ class RDS_LayerAct(RDSAnalysis):
 
     @staticmethod
     def _cosine_sim_rows(
-        disp_direction1: Float[np.ndarray, "B n_feat"],
-        disp_direction2: Float[np.ndarray, "B n_feat"],
+        disp_direction1: Float[np.ndarray, "n_samples_per_rds_cond n_feat"],
+        disp_direction2: Float[np.ndarray, "n_samples_per_rds_cond n_feat"],
         tol: float,
-    ) -> Float[np.ndarray, "B"]:
+    ) -> Float[np.ndarray, "n_samples_per_rds_cond"]:
         """
         Row-wise cosine similarity; zero/near-zero axes have undefined direction (NaN).
+
+        ps: n_samples_per_rds_cond: the number of RDSs for each dotMatch and dotDens
+            n_samples_per_rds_cond = len(self.disp_ct_pix_list) * self.n_rds_each_disp
+            n_feat = n_feature_channels * n_disp_channels
         """
 
         first_norm = np.linalg.norm(disp_direction1, axis=1)
@@ -1097,7 +1119,7 @@ class RDS_LayerAct(RDSAnalysis):
 
         return near_weights - far_weights
 
-    def compute_cosine_similarity_layers(
+    def compute_cosineSim_layers(
         self,
         dotDens: float,
         split_train: float,
@@ -1107,6 +1129,20 @@ class RDS_LayerAct(RDSAnalysis):
 
         # load layer activation
         data, labels = self._load_layer_activation(dotDens)
+        # data = {"ards": {layer19: [n_samples_per_rds_cond, n_feat],
+        #                     layer20: [n_samples_per_rds_cond, n_feat],
+        #                     ...},
+        #         "hmrds": {layer19: [n_samples_per_rds_cond, n_feat],
+        #                     layer20: [n_samples_per_rds_cond, n_feat],
+        #                     ...},
+        #         ...}
+
+        # labels = {"ards": [n_samples_per_rds_cond],
+        #             "hmrds": [n_samples_per_rds_cond],
+        #             "crds": [n_samples_per_rds_cond]}
+
+        # ps: n_samples_per_rds_cond = len(self.disp_ct_pix_list) * self.n_rds_each_disp
+        #     n_feat = n_feature_channels * n_disp_channels
         y = labels["crds"]
         expected = np.repeat(self.disp_ct_pix_list, self.n_rds_each_disp)
         if not np.array_equal(y, expected) or len(np.unique(y)) != 2:
@@ -1148,11 +1184,13 @@ class RDS_LayerAct(RDSAnalysis):
         }
         weights_train = self._contrast_weights(
             mask_train, y
-        )  # [n_bootstrap, n_samples_per_cond]
+        )  # [n_bootstrap, n_samples_per_rds_cond]
         weights_test = self._contrast_weights(
             ~mask_train, y
-        )  # [n_bootstrap, n_samples_per_cond]
+        )  # [n_bootstrap, n_samples_per_rds_cond]
         shape = (n_bootstrap, len(self.layer_name))
+
+        # allocate buffer for alignment and reliability
         alignment = {pair: np.full(shape, np.nan, dtype=np.float32) for pair in pairs}
         reliability = {
             cond: np.full(shape, np.nan, dtype=np.float32) for cond in conditions
@@ -1191,7 +1229,7 @@ class RDS_LayerAct(RDSAnalysis):
             for condition, values in x.items():
                 value = np.asarray(
                     values, dtype=np.float64
-                )  # [n_samples_per_cond, n_feat]
+                )  # [n_samples_per_rds_cond, n_feat]
                 centered[condition] = value - value[0]
 
             for begin in range(0, n_bootstrap, chunk_size):
@@ -1203,11 +1241,11 @@ class RDS_LayerAct(RDSAnalysis):
 
                     train_ax = (
                         weights_train[begin:end] @ centered[condition]
-                    )  # [chunk_size, n_samples_per_cond] x [n_samples_per_cond, n_feat]
+                    )  # [chunk_size, n_samples_per_rds_cond] @ [n_samples_per_rds_cond, n_feat]
                     # = [chunck_size, n_feat], n_feat = n_feat_channel * n_disp_channel
                     test_ax = (
                         weights_test[begin:end] @ centered[condition]
-                    )  # [chunk_size, n_samples_per_cond] x [n_samples_per_cond, n_feat]
+                    )  # [chunk_size, n_samples_per_rds_cond] @ [n_samples_per_rds_cond, n_feat]
                     # = [chunck_size, n_feat]
                     train_axes[condition] = train_ax
 
@@ -1239,7 +1277,7 @@ class RDS_LayerAct(RDSAnalysis):
 
         return {"alignment": alignment, "reliability": reliability}
 
-    def compute_cosineSim_disparity_layers(
+    def compute_cosineSim_disp_layers(
         self,
         dotDens: float,
         split_train: float,
@@ -1250,7 +1288,10 @@ class RDS_LayerAct(RDSAnalysis):
         """
         Compute cosine similarity between near-far disparity-profile
         contrasts across RDS types for every GC-Net layer.
+        The disparity-profile here is obtained by averaging activations across
+        feature channels for every layer.
 
+        Concretely:
         For each sample, the pooled layer activation has shape:
 
             [feature_channel * disparity_channel]
@@ -1276,9 +1317,7 @@ class RDS_LayerAct(RDSAnalysis):
 
         For each grouped split and RDS condition, the disparity contrast is:
 
-            delta_P(d)
-                = mean_near P(d)
-                - mean_far P(d)
+            delta_P(d) = mean_near P(d) - mean_far P(d)
 
         Alignment is then measured between RDS conditions:
 
@@ -1304,11 +1343,6 @@ class RDS_LayerAct(RDSAnalysis):
         # --------------------------------------------------------------
         # validate arguments
         # --------------------------------------------------------------
-        if self.model_name != "GC_Net":
-            raise ValueError(
-                "Disparity-profile analysis currently requires GC_Net layers"
-            )
-
         if not 0.0 < split_train < 1.0:
             raise ValueError("split_train must satisfy 0 < split_train < 1")
 
@@ -1331,6 +1365,20 @@ class RDS_LayerAct(RDSAnalysis):
         # load activations
         # --------------------------------------------------------------
         data, labels = self._load_layer_activation(dotDens)
+        # data = {"ards": {layer19: [n_samples_per_rds_cond, n_feat],
+        #                     layer20: [n_samples_per_rds_cond, n_feat],
+        #                     ...},
+        #         "hmrds": {layer19: [n_samples_per_rds_cond, n_feat],
+        #                     layer20: [n_samples_per_rds_cond, n_feat],
+        #                     ...},
+        #         ...}
+
+        # labels = {"ards": [n_samples_per_rds_cond],
+        #             "hmrds": [n_samples_per_rds_cond],
+        #             "crds": [n_samples_per_rds_cond]}
+
+        # ps: n_samples_per_rds_cond = len(self.disp_ct_pix_list) * self.n_rds_each_disp
+        #     n_feat = n_feature_channels * n_disp_channels
 
         conditions = ("crds", "hmrds", "ards")
         y = labels["crds"]
@@ -1455,7 +1503,7 @@ class RDS_LayerAct(RDSAnalysis):
         for layer_idx, layer_name in enumerate(
             tqdm(
                 self.layer_name,
-                desc="Cosine similarity: disparity profiles",
+                desc="Cosine similarity - disparity profiles",
             )
         ):
 
@@ -1530,8 +1578,7 @@ class RDS_LayerAct(RDSAnalysis):
             # ----------------------------------------------------------
             # Convert:
             # [sample, feature * disparity] -> [sample, feature, disparity]
-            #       ->
-            # [sample, disparity]
+            #       -> [sample, disparity]
             #
             # Importantly, reduce across feature channels BEFORE
             # multiplying by the split weights.
@@ -1617,13 +1664,13 @@ class RDS_LayerAct(RDSAnalysis):
         # Preserve existing filename for the original signed mean.
         # Alternative profile definitions get an explicit suffix so they
         # cannot silently overwrite the primary analysis.
-        mode_suffix = "" if profile_mode == "mean" else f"_{profile_mode}"
+        # mode_suffix = "" if profile_mode == "mean" else f"_{profile_mode}"
         for pair, score in alignment.items():
             np.save(
                 Path(self.layer_act_dir)
                 / (
-                    f"cosineSim_disparity"
-                    f"{mode_suffix}_{pair}"
+                    f"cosineSim_align_disp"
+                    f"_{pair}"
                     f"_dotDens_{dotDens:.2f}"
                     f"_bootstrap.npy"
                 ),
@@ -1634,8 +1681,8 @@ class RDS_LayerAct(RDSAnalysis):
             np.save(
                 Path(self.layer_act_dir)
                 / (
-                    f"cosineSim_disparity"
-                    f"{mode_suffix}_reliab_{condition}"
+                    f"cosineSim_reliab_disp"
+                    f"_{condition}"
                     f"_dotDens_{dotDens:.2f}"
                     f"_bootstrap.npy"
                 ),
@@ -1645,11 +1692,7 @@ class RDS_LayerAct(RDSAnalysis):
         # Save analysis settings and exact masks for reproducibility.
         np.savez(
             Path(self.layer_act_dir)
-            / (
-                f"cosineSim_disparity"
-                f"{mode_suffix}_splits"
-                f"_dotDens_{dotDens:.2f}.npz"
-            ),
+            / (f"cosineSim_disp" f"_splits" f"_dotDens_{dotDens:.2f}.npz"),
             train_mask=mask_train,
             test_mask=mask_test,
             split_train=split_train,
@@ -1663,25 +1706,41 @@ class RDS_LayerAct(RDSAnalysis):
             "reliability": reliability,
         }
 
-    def _load_cosine_simi_data(self, dotDens: float):
+    def _load_cosine_simi_data(self, dotDens: float, mode: str = None):
 
         rds_pairs = ("crds_ards", "crds_hmrds", "hmrds_ards")
         rds_conditions = ("crds", "hmrds", "ards")
 
-        alignment = {
-            pair: np.load(
-                Path(self.layer_act_dir)
-                / f"cosineSim_align_{pair}_dotDens_{dotDens:.2f}_bootstrap.npy"
-            )
-            for pair in rds_pairs
-        }  # {rds_pair: [n_bootstrap, n_layer]}
-        reliability = {
-            condition: np.load(
-                Path(self.layer_act_dir)
-                / f"cosineSim_reliab_{condition}_dotDens_{dotDens:.2f}_bootstrap.npy"
-            )
-            for condition in rds_conditions
-        }  # reliability: # {rds_cond: [n_bootstrap, n_layer]}
+        if mode == None:
+            alignment = {
+                pair: np.load(
+                    Path(self.layer_act_dir)
+                    / f"cosineSim_align_{pair}_dotDens_{dotDens:.2f}_bootstrap.npy"
+                )
+                for pair in rds_pairs
+            }  # {rds_pair: [n_bootstrap, n_layer]}
+            reliability = {
+                condition: np.load(
+                    Path(self.layer_act_dir)
+                    / f"cosineSim_reliab_{condition}_dotDens_{dotDens:.2f}_bootstrap.npy"
+                )
+                for condition in rds_conditions
+            }  # reliability: # {rds_cond: [n_bootstrap, n_layer]}
+        else:
+            alignment = {
+                pair: np.load(
+                    Path(self.layer_act_dir)
+                    / f"cosineSim_align_disp_{pair}_dotDens_{dotDens:.2f}_bootstrap.npy"
+                )
+                for pair in rds_pairs
+            }  # {rds_pair: [n_bootstrap, n_layer]}
+            reliability = {
+                condition: np.load(
+                    Path(self.layer_act_dir)
+                    / f"cosineSim_reliab_disp_{condition}_dotDens_{dotDens:.2f}_bootstrap.npy"
+                )
+                for condition in rds_conditions
+            }  # reliability: # {rds_cond: [n_bootstrap, n_layer]}
 
         if any(
             value.ndim != 2 or value.shape[1] != len(self.layer_name)
@@ -1716,7 +1775,7 @@ class RDS_LayerAct(RDSAnalysis):
         )
         return mean, np.sqrt(variance), count
 
-    def plot_cosine_similarity(self, save_flag=True):
+    def plot_cosineSim(self, mode: str = None, save_flag: bool = True):
         """
         Plot one dotDens or all configured densities
 
@@ -1755,7 +1814,7 @@ class RDS_LayerAct(RDSAnalysis):
         for row, dotDens in enumerate(dotDens_list):
 
             # load cosine similarity data
-            alignment, reliability = self._load_cosine_simi_data(dotDens)
+            alignment, reliability = self._load_cosine_simi_data(dotDens, mode)
             # dotDens = 0.1
             # alignment, reliability = rdsl._load_cosine_simi_data(dotDens)
 
@@ -1864,7 +1923,10 @@ class RDS_LayerAct(RDSAnalysis):
             axes[row, 1].set_title(f"Reliability: dot density {dotDens:.2f}")
 
         # fig.suptitle(f"{self.model_name}: near–far disparity axes")
-        self._save_plot(fig, f"plot_cosine_similarity_all.pdf", save_flag)
+        if mode == None:
+            self._save_plot(fig, f"plot_cosineSim_all.pdf", save_flag)
+        else:
+            self._save_plot(fig, f"plot_cosineSim_{mode}_all.pdf", save_flag)
 
     def _load_cosine_similarity_all_seeds(self, interaction: str):
         """
@@ -2117,13 +2179,13 @@ class RDS_LayerAct(RDSAnalysis):
                 bbox_inches="tight",
             )
 
-    def _split_groups(self, n_samples_per_cond: int):
+    def _split_groups(self, n_samples_per_rds_cond: int):
         """Keep shared generation trials AND inference batches in one fold.
 
         BatchNorm uses current batch statistics in this repository, even in eval.
         Splitting images from one inference batch between folds leaks context.
         """
-        parent = np.arange(n_samples_per_cond)
+        parent = np.arange(n_samples_per_rds_cond)
 
         def root(i):
             while parent[i] != i:
@@ -2134,10 +2196,10 @@ class RDS_LayerAct(RDSAnalysis):
         def join(i, j):
             parent[root(i)] = root(j)
 
-        for i in range(n_samples_per_cond):
+        for i in range(n_samples_per_rds_cond):
             join(i, (i // self.batch_size_rds) * self.batch_size_rds)
             join(i, i % self.n_rds_each_disp)
-        return np.array([root(i) for i in range(n_samples_per_cond)])
+        return np.array([root(i) for i in range(n_samples_per_rds_cond)])
 
     def _xDecode(
         self,

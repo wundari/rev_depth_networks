@@ -489,6 +489,7 @@ class RDSAnalysis(EngineBase):
         # predict disparity map
         self.model.eval()
         tepoch = tqdm(rds_bank, desc="Predicting RDS")
+        rng = torch.Generator()
         offset = 0
         for inputs_left, inputs_right, disps in tepoch:
             # for i in range(len(rds_loader)):
@@ -496,30 +497,29 @@ class RDSAnalysis(EngineBase):
 
             # print(f"disp map RDS dotMatch: {dotMatch:.2f}, dotDens: {dotDens:.2f}")
 
-            # Generate disparity direction. Swap left/right per sample rather
-            # than per batch, so correctness does not depend on batch boundaries.
             # generate disparity direction
             # ref = disps / 10
-            ref = torch.ones(len(disps), dtype=torch.float32)
+            # ref = torch.ones(len(disps), dtype=torch.float32)
+            ref = torch.randint(0, 2, (len(disps),), generator=rng) * 2 - 1
 
             # build nested tensor
-            input_data = NestedTensor(
-                left=inputs_left.to(self.config.device, non_blocking=True),
-                right=inputs_right.to(self.config.device, non_blocking=True),
-                ref=ref.pin_memory().to(self.config.device, non_blocking=True),
-            )
-            # if ref.mean() > 0:
-            #     input_data = NestedTensor(
-            #         left=inputs_left.to(self.config.device, non_blocking=True),
-            #         right=inputs_right.to(self.config.device, non_blocking=True),
-            #         ref=ref.pin_memory().to(self.config.device, non_blocking=True),
-            #     )
-            # else:
-            #     input_data = NestedTensor(
-            #         left=inputs_right.to(self.config.device, non_blocking=True),
-            #         right=inputs_left.to(self.config.device, non_blocking=True),
-            #         ref=ref.pin_memory().to(self.config.device, non_blocking=True),
-            #     )
+            # input_data = NestedTensor(
+            #     left=inputs_left.to(self.config.device, non_blocking=True),
+            #     right=inputs_right.to(self.config.device, non_blocking=True),
+            #     ref=ref.pin_memory().to(self.config.device, non_blocking=True),
+            # )
+            if ref.float().mean() > 0:
+                input_data = NestedTensor(
+                    left=inputs_left.to(self.config.device, non_blocking=True),
+                    right=inputs_right.to(self.config.device, non_blocking=True),
+                    ref=ref.pin_memory().to(self.config.device, non_blocking=True),
+                )
+            else:
+                input_data = NestedTensor(
+                    left=inputs_right.to(self.config.device, non_blocking=True),
+                    right=inputs_left.to(self.config.device, non_blocking=True),
+                    ref=ref.pin_memory().to(self.config.device, non_blocking=True),
+                )
 
             # model output
             with torch.autocast(device_type=self.config.device, dtype=torch.bfloat16):

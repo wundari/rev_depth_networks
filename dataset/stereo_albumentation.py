@@ -121,8 +121,7 @@ def random_crop(
     offset = int(shift)
 
     # x denotes coordinate in REFERENCE view
-    # delta = reference * offset
-    delta = offset
+    delta = reference * offset
 
     low = max(0, delta)
     high = min(w - cw, w - cw + delta)
@@ -180,7 +179,8 @@ def random_crop(
     # Ground truth always belongs to selected reference eye
     # -----------------------------------------------------
     shifted = crop(source, x, y, x + cw, y + ch) - offset
-    input_data["disp"] = np.minimum(shifted, w)
+    # input_data["disp"] = np.minimum(shifted, w)
+    input_data["disp"] = reference * np.minimum(shifted, w)
     input_data["ref"] = reference
 
     return input_data
