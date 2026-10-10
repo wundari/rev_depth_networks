@@ -81,15 +81,15 @@ class Config:
     # list of seed numbers for reproducibility
     seed_to_analyse: list[int] = field(
         default_factory=lambda: [
-            # 1618,
-            # 11364,
-            # 16476,
-            # 27829,
-            # 35154,
+            1618,
+            11364,
+            16476,
+            27829,
+            35154,
             35744,
             36675,
-            # 43798,
-            # 55826,
+            43798,
+            55826,
             # 59035,
             # 65190,
             # 82220,

@@ -9,7 +9,7 @@ class ConfigGCNet(Config):
 
     model_name: str = "GC_Net_LR"
     binocular_interaction: str = "sum_diff"
-    seed: int = 36675
+    seed: int = 1618
 
     # Preserve physical eye identity throughout
     # the dataset/model pipeline.
@@ -26,7 +26,7 @@ class ConfigGCNet(Config):
     ), "n_rds_each_disp must be divisible by batch_size_rds"
 
     # resume from checkpoint
-    load_state: bool = False
+    load_state: bool = True
     if load_state:
         compile_mode = None
     experiment_id: int = seed  # experiment id for loading pretrained DNN
@@ -39,15 +39,15 @@ class ConfigGCNet(Config):
     # bino_interaction: default, batch size 4
     epoch_iter_to_load_default: list[tuple[int, int]] = field(
         default_factory=lambda: [
-            # (9, 16500),  # seed 1618
-            # (9, 17500),  # seed 11364
-            # (9, 17000),  # seed 16476
+            (9, 16500),  # seed 1618
+            (9, 17500),  # seed 11364
+            (9, 17000),  # seed 16476
             (8, 15500),  # seed 27829
             (9, 16500),  # seed 35154
-            (9, 17000),  # seed 35744
+            (9, 16500),  # seed 35744
             (9, 17589),  # seed 36675
-            (9, 17000),  # seed 43798
-            (9, 17500),  # seed 55826
+            (9, 17500),  # seed 43798
+            (9, 17589),  # seed 55826
             (9, 16000),  # seed 59035
             (9, 17000),  # seed 65190
             (9, 17000),  # seed 82220
@@ -58,15 +58,15 @@ class ConfigGCNet(Config):
     # bino_interaction: bem, batch size 4
     epoch_iter_to_load_bem: list[tuple[int, int]] = field(
         default_factory=lambda: [
-            # (9, 16500),  # seed 1618
-            # (9, 17500),  # seed 11364
-            # (9, 16000),  # seed 16476
+            (9, 16500),  # seed 1618
+            (9, 17500),  # seed 11364
+            (9, 16000),  # seed 16476
             (9, 17000),  # seed 27829
             (9, 17000),  # seed 35154
-            (9, 17000),  # seed 35744
-            (9, 16500),  # seed 36675
-            (9, 17000),  # seed 43798
-            (9, 17500),  # seed 55826
+            (9, 16000),  # seed 35744
+            (9, 17589),  # seed 36675
+            (9, 17500),  # seed 43798
+            (9, 17589),  # seed 55826
             (9, 16000),  # seed 59035
             (9, 17000),  # seed 65190
             (9, 17000),  # seed 82220
@@ -82,10 +82,10 @@ class ConfigGCNet(Config):
             (9, 16500),  # seed 16476
             (9, 17000),  # seed 27829
             (9, 16500),  # seed 35154
-            (9, 17589),  # seed 35744
-            (9, 17589),  # seed 36675
-            (9, 17000),  # seed 43798
-            (9, 17500),  # seed 55826
+            (9, 16000),  # seed 35744
+            (7, 14000),  # seed 36675
+            (9, 16000),  # seed 43798
+            (9, 17589),  # seed 55826
             (9, 16500),  # seed 59035
             (7, 14000),  # seed 65190
             (9, 17589),  # seed 82220

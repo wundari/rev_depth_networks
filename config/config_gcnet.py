@@ -9,7 +9,7 @@ class ConfigGCNet(Config):
 
     model_name: str = "GC_Net"
     binocular_interaction: str = "default"
-    seed: int = 11364
+    seed: int = 1618
 
     # RDS parameters
     batch_size_rds: int = 8
@@ -18,12 +18,12 @@ class ConfigGCNet(Config):
     ), "n_rds_each_disp must be divisible by batch_size_rds"
 
     # resume from checkpoint
-    load_state: bool = False
+    load_state: bool = True
     if load_state:
         compile_mode = None
     experiment_id: int = seed  # experiment id for loading pretrained DNN
-    epoch_to_load = 9
-    iter_to_load = 16800
+    epoch_to_load = 8
+    iter_to_load = 15400
     model_pretrained: str = (
         f"epoch_{epoch_to_load}_iter_{iter_to_load}_model_best.pth.tar"  # pretrained file name, e.g: epoch_1_model.pth.tar
     )

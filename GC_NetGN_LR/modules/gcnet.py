@@ -106,25 +106,8 @@ class GCNet(nn.Module):
         feat_left, feat_right = self.encoder(x)
 
         # compute disparity map
-        # p_swap_left2right = random.random()  # determine the direction of disparity
-        # if p_swap_left2right <= 0.5:
-        #     # use disp_left as ground truth,
-        #     # use img_left as a reference, enhance negative disparity
-        #     logits = self.decoder(feat_left, feat_right)
-        #     disp_pred = torch.sum(logits * self.disp_indices, dim=1)
-        # else:
-        #     # swap left and right inputs
-        #     # use disp_right as ground truth
-        #     # use img_right as a reference, enhance positive disparity
-        #     logits = self.decoder(feat_right, feat_left)
-        #     disp_pred = torch.sum(logits * self.disp_indices * -1, dim=1)
-
         logits = self.decoder(feat_left, feat_right, x.ref)
         disp_pred = torch.sum(logits * self.disp_indices, dim=1)
-
-        # logits = self.decoder(feat_right, feat_left)
-        # logits = self.decoder(feat_left, feat_right)
-        # disp_pred = torch.sum(logits * self.disp_indices, dim=1)
 
         return disp_pred
 

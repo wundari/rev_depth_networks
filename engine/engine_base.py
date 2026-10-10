@@ -194,12 +194,6 @@ class EngineBase:
             state, unwanted_prefix
         )
 
-        # # fix the keys of the state dictionary
-        # unwanted_prefix = "_orig_mod."
-        # for k, v in list(state.items()):
-        #     if k.startswith(unwanted_prefix):
-        #         state[k[len(unwanted_prefix) :]] = state.pop(k)
-
         model.load_state_dict(state, strict=True)
         self.model = model.to(self.device)
         self.model.eval()

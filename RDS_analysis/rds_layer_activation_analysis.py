@@ -309,9 +309,9 @@ class RDS_LayerAct(RDSAnalysis):
 
         # update directory for storing plots of a given interaction
         # (average across seeds)
-        self.plot_dir = f"{self.experiment_dir}/../plots"
-        if not os.path.exists(self.plot_dir):
-            os.makedirs(self.plot_dir)
+        self.plot_pgm_dir = f"{self.experiment_dir}/../plots"
+        if not os.path.exists(self.plot_pgm_dir):
+            os.makedirs(self.plot_pgm_dir)
 
         # update folders for rds analysis
         self.make_rds_dirs()
@@ -464,12 +464,15 @@ class RDS_LayerAct(RDSAnalysis):
 
     def _generate_rds_loader(
         self,
-        dotMatch,
-        dotDens,
-        background_flag,
-        pedestal_flag,
+        dotMatch: float,
+        dotDens: float,
+        background_flag: bool,
+        pedestal_flag: bool,
         rds_bank=None,
     ):
+        """
+        Create a dataloader that generates RDS images for a given dotMatch and dotDens.
+        """
         print(
             "==============================================================\n"
             + "Generate RDS dataloader: \n"
@@ -2174,7 +2177,7 @@ class RDS_LayerAct(RDSAnalysis):
 
         if save_flag:
             plt.savefig(
-                f"{self.plot_dir}/plot_cosine_similarity_avg_seeds_{interaction}.pdf",
+                f"{self.plot_pgm_dir}/plot_cosine_similarity_avg_seeds_{interaction}.pdf",
                 dpi=600,
                 bbox_inches="tight",
             )
@@ -2574,7 +2577,7 @@ class RDS_LayerAct(RDSAnalysis):
 
         if save_flag:
             plt.savefig(
-                f"{self.plot_dir}/plot_xDecode_avg_seeds_{interaction}.pdf",
+                f"{self.plot_pgm_dir}/plot_xDecode_avg_seeds_{interaction}.pdf",
                 dpi=600,
                 bbox_inches="tight",
             )

@@ -36,9 +36,9 @@ class GA_RDS(RDSAnalysis):
 
         # directory for storing plots of a given interaction
         # (average across seeds)
-        self.plot_dir = f"{self.experiment_dir}/../plots"
-        if not os.path.exists(self.plot_dir):
-            os.makedirs(self.plot_dir)
+        self.plot_pgm_dir = f"{self.experiment_dir}/../plots"
+        if not os.path.exists(self.plot_pgm_dir):
+            os.makedirs(self.plot_pgm_dir)
 
         # print out network configuration
         self.__getconfig__()
@@ -228,7 +228,7 @@ class GA_RDS(RDSAnalysis):
         # save plot
         if save_flag:
             plt.savefig(
-                f"{self.plot_dir}/plotLine_{self.model_name}_rds_xDecode_{interaction}.pdf",
+                f"{self.plot_pgm_dir}/plotLine_{self.model_name}_rds_xDecode_{interaction}.pdf",
                 dpi=600,
                 bbox_inches="tight",
             )

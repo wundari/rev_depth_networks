@@ -31,12 +31,12 @@ Temporal mean:
 from __future__ import annotations
 from typing import Literal
 
-import numpy as np
 import torch
 from torch import Tensor
 from torch.utils.data import Dataset, DataLoader
 
 from utilities.misc import NestedTensor
+from jaxtyping import Float
 
 
 # ============================================================
@@ -50,30 +50,21 @@ def unwrap_model(model):
 
 
 def expectation_from_posterior(
-    posterior: Tensor,
-    disparity_values: Tensor,
-) -> Tensor:
+    posterior: Float[Tensor, "B D H W"] | Float[Tensor, "B D"],
+    disparity_values: Float[Tensor, "D"],
+) -> Float[Tensor, "B H W"] | Float[Tensor, "B"]:
     """
     Parameters
     ----------
-    posterior:
-        [B, D, H, W]
-        or
-        [B, D]
-
-    disparity_values:
-        [D]
+        posterior: [B, D, H, W] | [B, D]
+        disparity_values: [D]
 
     Returns
     -------
-    expected disparity:
-        [B, H, W]
-        or
-        [B]
+        expected disparity: [B, H, W] | [B]
     """
 
     shape = [1, -1] + [1] * (posterior.ndim - 2)
-
     d = disparity_values.view(*shape).to(
         posterior.device,
         posterior.dtype,
@@ -83,17 +74,14 @@ def expectation_from_posterior(
 
 
 def spatial_mean(
-    x: Tensor,
+    x: Float[Tensor, "B H W"],
     roi=None,
-) -> Tensor:
+) -> Float[Tensor, "B"]:
     """
     Spatially average a disparity map.
 
-    x:
-        [B, H, W]
-
-    roi:
-        (y0, y1, x0, x1)
+    x: [B, H, W]
+    roi: (y0, y1, x0, x1)
 
     Returns
     -------
@@ -108,14 +96,13 @@ def spatial_mean(
 
 
 def posterior_spatial_mean(
-    posterior: Tensor,
+    posterior: Float[Tensor, "B D H W"],
     roi=None,
 ) -> Tensor:
     """
     Spatially pool a disparity posterior.
 
-    posterior:
-        [B, D, H, W]
+    posterior: [B, D, H, W]
 
     Returns
     -------
@@ -141,9 +128,9 @@ def posterior_spatial_mean(
 # Reference-eye canonicalization
 # ============================================================
 def canonicalize_reference_posteriors(
-    posterior_left: Tensor,
-    posterior_right: Tensor,
-    disparity_values: Tensor,
+    posterior_left: Float[Tensor, "B D H W"],
+    posterior_right: Float[Tensor, "B D H W"],
+    disparity_values: Float[Tensor, "D"],
 ):
     """
     Convert left- and right-reference distributions to one
@@ -159,14 +146,12 @@ def canonicalize_reference_posteriors(
 
     IMPORTANT:
     GC-Net currently has disparities:
-
         [-96, ..., 95]
 
     A simple torch.flip() is therefore not an exact sign
     reversal, because +96 does not exist in the original grid.
 
     We instead construct the union:
-
         [-96, ..., 96]
 
     Parameters
@@ -255,8 +240,8 @@ def canonicalize_reference_posteriors(
 @torch.inference_mode()
 def predict_both_references(
     model,
-    left: Tensor,
-    right: Tensor,
+    left: Float[Tensor, "B C H W"],
+    right: Float[Tensor, "B C H W"],
 ):
     """
     Run the SAME RDS through GC-Net twice:
@@ -290,13 +275,9 @@ def predict_both_references(
 
     # --------------------------------------------
     # Duplicate each image pair.
-    # first B samples:
-    #     left reference
-    #
-    # second B samples:
-    #     right reference
+    # first B samples: left reference
+    # second B samples: right reference
     # --------------------------------------------
-
     left_all = torch.cat([left, left], dim=0)
     right_all = torch.cat([right, right], dim=0)
     ref = torch.cat(
@@ -314,12 +295,10 @@ def predict_both_references(
         ],
         dim=0,
     )
-
     x = NestedTensor(left=left_all, right=right_all, ref=ref)
 
     was_training = net.training
     net.eval()
-
     try:
         # Encoder
         feat_left, feat_right = net.encoder(x)
@@ -333,7 +312,6 @@ def predict_both_references(
 
     posterior_left = posterior[:B]
     posterior_right = posterior[B:]
-
     disparity_values = net.disp_indices.reshape(-1).to(
         device=device,
         dtype=posterior.dtype,
@@ -357,8 +335,8 @@ def predict_both_references(
 @torch.inference_mode()
 def analyze_temporal_batch(
     model,
-    left_sequence: Tensor,
-    right_sequence: Tensor,
+    left_sequence: Float[Tensor, "B T C H W"],
+    right_sequence: Float[Tensor, "B T C H W"],
     reference_mode: Literal[
         "marginalize",
         "sample",
@@ -416,13 +394,12 @@ def analyze_temporal_batch(
         raise ValueError("Left/right sequence shapes must match")
 
     if left_sequence.ndim != 5:
-        raise ValueError("Expected [B,T,C,H,W]")
+        raise ValueError("Expected [B, T, C, H, W]")
 
     if not 0.0 <= p_left <= 1.0:
         raise ValueError("p_left must lie in [0,1]")
 
     B, T, _, _, _ = left_sequence.shape
-
     device = next(unwrap_model(model).parameters()).device
 
     # CPU RNG makes sampled eye-reference sequences
@@ -435,14 +412,10 @@ def analyze_temporal_batch(
     # --------------------------------------------------------
     mu_left_raw_all = []
     mu_right_raw_all = []
-
     mu_left_common_all = []
     mu_right_common_all = []
-
     mu_ref_integrated_all = []
-
     reference_symmetry_error_all = []
-
     sampled_refs_all = []
 
     # --------------------------------------------------------
@@ -466,12 +439,7 @@ def analyze_temporal_batch(
 
         left_t = left_sequence[:, t]
         right_t = right_sequence[:, t]
-
-        pred = predict_both_references(
-            model,
-            left_t,
-            right_t,
-        )
+        pred = predict_both_references(model, left_t, right_t)
 
         p_left_raw = pred["posterior_left"]
         p_right_raw = pred["posterior_right"]
@@ -485,10 +453,8 @@ def analyze_temporal_batch(
 
         # ----------------------------------------------------
         # Canonicalize reference eye.
-        # Left:
-        #     d_common = d_left
-        # Right:
-        #     d_common = -d_right
+        # Left: d_common = d_left
+        # Right: d_common = -d_right
         # ----------------------------------------------------
         (
             p_left_common,
@@ -506,7 +472,6 @@ def analyze_temporal_batch(
             p_left_common,
             common_disp,
         )
-
         mu_right_common = expectation_from_posterior(
             p_right_common,
             common_disp,
@@ -520,14 +485,7 @@ def analyze_temporal_batch(
             sampled_ref = None
 
         elif reference_mode == "sample":
-            choose_left_cpu = (
-                torch.rand(
-                    B,
-                    generator=rng,
-                )
-                < p_left
-            )
-
+            choose_left_cpu = torch.rand(B, generator=rng) < p_left
             choose_left = choose_left_cpu.to(device=device).view(B, 1, 1, 1)
             p_t = torch.where(choose_left, p_left_common, p_right_common)
 
@@ -572,7 +530,7 @@ def analyze_temporal_batch(
 
         # If perfect reference anti-symmetry holds:
         # mu_left_raw = -mu_right_raw
-        #
+
         # Equivalently, after canonicalization:
         # mu_left_common = mu_right_common
         ref_symmetry_error = spatial_mean(
@@ -589,20 +547,13 @@ def analyze_temporal_batch(
         reference_symmetry_error_all.append(ref_symmetry_error.cpu())
 
         # ----------------------------------------------------
-        # Pool posterior spatially.
-        # [B,D,H,W] -> [B,D]
-        #
+        # Pool posterior spatially: [B,D,H,W] -> [B,D]
         # This keeps temporal probability integration cheap.
         # ----------------------------------------------------
-        p_t_roi = posterior_spatial_mean(
-            p_t,
-            roi,
-        )
+        p_t_roi = posterior_spatial_mean(p_t, roi)
 
         # ====================================================
-        # Temporal integration method A:
-        # arithmetic mean of expected disparity
-        #
+        # Temporal integration method A: arithmetic mean of expected disparity
         # 1/t sum E[Z_t]
         # ====================================================
         if running_mu_roi is None:
@@ -614,9 +565,7 @@ def analyze_temporal_batch(
         temporal_mean_curve.append(mean_t.cpu())
 
         # ====================================================
-        # Temporal integration method B:
-        # arithmetic mixture of posteriors
-        #
+        # Temporal integration method B: arithmetic mixture of posteriors
         # p_T(z) = 1/T sum p_t(z)
         # ====================================================
         if running_posterior is None:
@@ -625,17 +574,14 @@ def analyze_temporal_batch(
             running_posterior += p_t_roi
 
         posterior_mix = running_posterior / float(t + 1)
-
         posterior_mix_mean = expectation_from_posterior(
             posterior_mix,
             common_disp,
         )
-
         posterior_mix_curve.append(posterior_mix_mean.cpu())
 
         # ====================================================
-        # Temporal integration method C:
-        # product of evidence
+        # Temporal integration method C: product of evidence
         #
         # log p_T(z)
         #     proportional to
@@ -657,12 +603,10 @@ def analyze_temporal_batch(
             running_log_evidence,
             dim=1,
         )
-
         product_mean = expectation_from_posterior(
             product_posterior,
             common_disp,
         )
-
         posterior_product_curve.append(product_mean.cpu())
 
         # ----------------------------------------------------
@@ -787,7 +731,7 @@ class TemporalRDSSequenceDataset(Dataset):
             indices = [start + t for t in range(self.T)]
 
         else:
-            # SAME RDS repeated over time.
+            # static RDSs: same RDS frame repeated over time.
             indices = [start for _ in range(self.T)]
 
         left_frames = []
@@ -832,8 +776,7 @@ def run_temporal_rds_condition(
     rds_bank=None,
 ):
     """
-    Uses RDS_LayerAct._generate_rds_loader() from your
-    existing analysis code.
+    Uses RDS_LayerAct._generate_rds_loader() to generate RDSs.
     """
 
     base_loader = analysis._generate_rds_loader(
@@ -866,11 +809,7 @@ def run_temporal_rds_condition(
 
     common_disp = None
 
-    for (
-        left_sequence,
-        right_sequence,
-        labels,
-    ) in sequence_loader:
+    for left_sequence, right_sequence, labels in sequence_loader:
 
         result = analyze_temporal_batch(
             model=analysis.model,
@@ -887,14 +826,9 @@ def run_temporal_rds_condition(
         common_disp = result["common_disparity"]
 
         for key, value in result.items():
-
             if key == "common_disparity":
                 continue
-
-            batch_results.setdefault(
-                key,
-                [],
-            ).append(value)
+            batch_results.setdefault(key, []).append(value)
 
     output = {
         key: torch.cat(
@@ -904,13 +838,8 @@ def run_temporal_rds_condition(
         for key, values in batch_results.items()
     }
 
-    output["label"] = torch.cat(
-        labels_all,
-        dim=0,
-    ).numpy()
-
+    output["label"] = torch.cat(labels_all, dim=0).numpy()
     output["common_disparity"] = common_disp.numpy()
-
     output["T"] = T
     output["dynamic"] = dynamic
     output["dot_match"] = dot_match

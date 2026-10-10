@@ -34,7 +34,9 @@ from utilities.misc import NestedTensor
 
 # %%
 class NormalizeRDS:
-    """Normalize signed [-1,1] RGB arrays; no uint8 ToTensor ambiguity/lambda."""
+    """
+    Normalize signed [-1,1] RGB arrays; no uint8 ToTensor ambiguity/lambda.
+    """
 
     # mean = (0.485 * 255.0, 0.456 * 255.0, 0.406 * 255.0)
     # std = (0.229 * 255.0, 0.224 * 255.0, 0.225 * 255.0)
@@ -68,7 +70,10 @@ def _generate_rds_condition(
     background,
     pedestal,
 ):
-    """Generate one condition using one explicit seed per RDS trial."""
+    """
+    Generate one condition using one explicit seed per RDS trial.
+    """
+
     random_state = np.random.get_state()
     try:
         left_trials = []
@@ -114,7 +119,9 @@ def _generate_rds_condition(
 
 
 class RDSBankDataset(ConcatDataset):
-    """Conditions ordered by match, density, then the handler's disparity order."""
+    """
+    Conditions ordered by match, density, then the handler's disparity order.
+    """
 
     def __init__(
         self, datasets, dotMatch_list, dotDens_list, samples_per_condition, bank_seed
@@ -300,7 +307,8 @@ class RDSAnalysis(EngineBase):
         loader_workers: int = 4,
     ):
         """
-        Generate a bank of RDS images that store all rds types for all dotMatch and dotDens.
+        Generate a bank of RDS images that store all rds types (cRDS, hmRDS, aRDS)
+        for all dotMatch and dotDens.
 
         RDS bank structure:
         [dotMatch dotDens disp_magnitude n_rds_each_disp]
@@ -320,7 +328,8 @@ class RDSAnalysis(EngineBase):
                     rds_2
                     .
                     .
-                    .]
+                    .rds_(n_rds_each_disp)
+        ]
 
         For each rds_cond (each dotMatch and dotDens), there are len(disp_ct_pix_list) * n_rds_each_disp
 
@@ -451,16 +460,17 @@ class RDSAnalysis(EngineBase):
         rds_bank: DataLoader,
     ):
         """
-        generate disparity map specifically for rds for a given dot Match and dotDens.
+        generate disparity map for all RDSs (all rds_types, dotMatch, and dotDens)
+        stored in rds_bank.
 
         Args:
             rds_bank: DataLoader
 
         Returns:
-            pred_disp [len(disp_ct_pix_list) * n_rds_each_disp, h_bg, w_bg)] float32:
+            pred_disp [dotMatch, dotDens, 2*n_rds_each_disp, h, w] float32:
                     predicted disparity map
 
-            pred_disp_labels [len(disp_ct_pix_list) * n_rds_each_disp] int8:
+            pred_disp_labels [dotMatch, dotDens, 2*n_rds_each_disp] int8:
                 the label (near (+) or far(-)) of the predicted disparity map.
         """
 
@@ -499,27 +509,27 @@ class RDSAnalysis(EngineBase):
 
             # generate disparity direction
             # ref = disps / 10
-            # ref = torch.ones(len(disps), dtype=torch.float32)
-            ref = torch.randint(0, 2, (len(disps),), generator=rng) * 2 - 1
+            ref = torch.ones(len(disps), dtype=torch.float32)
+            # ref = torch.randint(0, 2, (len(disps),), generator=rng) * 2 - 1
 
             # build nested tensor
-            # input_data = NestedTensor(
-            #     left=inputs_left.to(self.config.device, non_blocking=True),
-            #     right=inputs_right.to(self.config.device, non_blocking=True),
-            #     ref=ref.pin_memory().to(self.config.device, non_blocking=True),
-            # )
-            if ref.float().mean() > 0:
-                input_data = NestedTensor(
-                    left=inputs_left.to(self.config.device, non_blocking=True),
-                    right=inputs_right.to(self.config.device, non_blocking=True),
-                    ref=ref.pin_memory().to(self.config.device, non_blocking=True),
-                )
-            else:
-                input_data = NestedTensor(
-                    left=inputs_right.to(self.config.device, non_blocking=True),
-                    right=inputs_left.to(self.config.device, non_blocking=True),
-                    ref=ref.pin_memory().to(self.config.device, non_blocking=True),
-                )
+            input_data = NestedTensor(
+                left=inputs_left.to(self.config.device, non_blocking=True),
+                right=inputs_right.to(self.config.device, non_blocking=True),
+                ref=ref.pin_memory().to(self.config.device, non_blocking=True),
+            )
+            # if ref.float().mean() > 0:
+            #     input_data = NestedTensor(
+            #         left=inputs_left.to(self.config.device, non_blocking=True),
+            #         right=inputs_right.to(self.config.device, non_blocking=True),
+            #         ref=ref.pin_memory().to(self.config.device, non_blocking=True),
+            #     )
+            # else:
+            #     input_data = NestedTensor(
+            #         left=inputs_right.to(self.config.device, non_blocking=True),
+            #         right=inputs_left.to(self.config.device, non_blocking=True),
+            #         ref=ref.pin_memory().to(self.config.device, non_blocking=True),
+            #     )
 
             # model output
             with torch.autocast(device_type=self.config.device, dtype=torch.bfloat16):
