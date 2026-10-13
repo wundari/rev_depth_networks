@@ -32,16 +32,16 @@ def main():
         for s, seed in enumerate(ga_rds.config.seed_to_analyse):
 
             if interaction == "default":
-                epoch, iter = ga_rds.config.epoch_iter_to_load_default[s]
+                epoch2load, iter2load = ga_rds.config.epoch_iter_to_load_default[s]
             elif interaction == "bem":
-                epoch, iter = ga_rds.config.epoch_iter_to_load_bem[s]
+                epoch2load, iter2load = ga_rds.config.epoch_iter_to_load_bem[s]
             elif interaction == "cmm":
-                epoch, iter = ga_rds.config.epoch_iter_to_load_cmm[s]
+                epoch2load, iter2load = ga_rds.config.epoch_iter_to_load_cmm[s]
             else:  # sum_diff
-                epoch, iter = ga_rds.config.epoch_iter_to_load_sum_diff[s]
+                epoch2load, iter2load = ga_rds.config.epoch_iter_to_load_sum_diff[s]
 
             # update network configuration and directory addresses
-            ga_rds.update_network_config(interaction, seed, epoch, iter)
+            ga_rds.update_network_config(interaction, seed, epoch2load, iter2load)
 
             # plot cross-decoding performance
             ga_rds.plotLine_xDecode(save_flag)

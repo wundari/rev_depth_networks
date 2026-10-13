@@ -298,11 +298,12 @@ class RDS_LayerAct(RDSAnalysis):
         self.config.model_pretrained = self.model_pretrained
 
         # update the experiment directories based on the new interaction
-        self.experiment_dir = (
-            f"{self.model_name}/run/{self.dataset}/"
-            + f"bino_interaction_{self.binocular_interaction}/"
-            + f"experiment_{self.seed}"
+        self.save_dir = os.path.join(
+            f"{self.model_name}/run",
+            self.dataset,
+            f"bino_interaction_{self.binocular_interaction}",
         )
+        self.experiment_dir = f"{self.save_dir}/" + f"experiment_{self.seed}"
 
         # update layer_act dir
         self._create_layer_act_dir()

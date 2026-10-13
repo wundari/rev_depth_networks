@@ -9,7 +9,7 @@ class ConfigGCNet(Config):
 
     model_name: str = "GC_Net_LR"
     binocular_interaction: str = "sum_diff"
-    seed: int = 1618
+    seed: int = 94750
 
     # Preserve physical eye identity throughout
     # the dataset/model pipeline.
@@ -48,10 +48,10 @@ class ConfigGCNet(Config):
             (9, 17589),  # seed 36675
             (9, 17500),  # seed 43798
             (9, 17589),  # seed 55826
-            (9, 16000),  # seed 59035
-            (9, 17000),  # seed 65190
+            (8, 15000),  # seed 59035
+            (9, 16500),  # seed 65190
             (9, 17000),  # seed 82220
-            (9, 17000),  # seed 94750
+            (9, 17500),  # seed 94750
         ]
     )
 
@@ -67,9 +67,9 @@ class ConfigGCNet(Config):
             (9, 17589),  # seed 36675
             (9, 17500),  # seed 43798
             (9, 17589),  # seed 55826
-            (9, 16000),  # seed 59035
-            (9, 17000),  # seed 65190
-            (9, 17000),  # seed 82220
+            (9, 16500),  # seed 59035
+            (9, 17589),  # seed 65190
+            (9, 17589),  # seed 82220
             (9, 17500),  # seed 94750
         ]
     )
@@ -86,7 +86,7 @@ class ConfigGCNet(Config):
             (7, 14000),  # seed 36675
             (9, 16000),  # seed 43798
             (9, 17589),  # seed 55826
-            (9, 16500),  # seed 59035
+            (9, 17000),  # seed 59035
             (7, 14000),  # seed 65190
             (9, 17589),  # seed 82220
             (9, 17500),  # seed 94750
@@ -105,9 +105,9 @@ class ConfigGCNet(Config):
             (9, 17589),  # seed 36675
             (9, 17500),  # seed 43798
             (9, 17500),  # seed 55826
-            (9, 16500),  # seed 59035
-            (8, 15500),  # seed 65190
-            (9, 17589),  # seed 82220
-            (9, 17500),  # seed 94750
+            (8, 15000),  # seed 59035
+            (9, 16500),  # seed 65190
+            (9, 17000),  # seed 82220
+            (9, 16500),  # seed 94750
         ]
     )

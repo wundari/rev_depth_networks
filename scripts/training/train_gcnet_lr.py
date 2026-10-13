@@ -5,6 +5,7 @@ def main():
 
     # set up DNN
     config = ConfigGCNet()
+    config.load_state = False
     engine = EngineGCNet(config)
 
     # prepare dataset

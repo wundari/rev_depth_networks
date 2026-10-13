@@ -6,10 +6,14 @@ from torch.utils.data import SequentialSampler
 import os
 import gc
 import numpy as np
-
 import matplotlib.pyplot as plt
 import seaborn as sns
+from matplotlib.lines import Line2D
+from matplotlib.ticker import FormatStrFormatter
+
+from pathlib import Path
 from tqdm import tqdm
+from scipy.stats import sem
 from jaxtyping import Float, Int
 
 from config.config_gcnet_lr import ConfigGCNet
@@ -88,11 +92,11 @@ class PGM(RDSAnalysis):
         self.config.model_pretrained = self.model_pretrained
 
         # update the experiment directories based on the new interaction
-        self.experiment_dir = (
+        self.save_dir = (
             f"{self.model_name}/run/{self.dataset}/"
             + f"bino_interaction_{self.binocular_interaction}/"
-            + f"experiment_{self.seed}"
         )
+        self.experiment_dir = f"{self.save_dir}/" + f"experiment_{self.seed}"
 
         # update folders for pgm
         self._create_pgm_dir()
@@ -106,7 +110,6 @@ class PGM(RDSAnalysis):
             + f"Epoch: {epoch_old} => {self.config.epoch_to_load}\n"
             + f"Iter: {iter_old} => {self.config.iter_to_load}\n"
             + f"Experiment directory: {self.experiment_dir}\n"
-            + f"RDS directory: {self.rds_dir}\n"
             + f"PGM directory: {self.pgm_dir}\n"
             + "==============================================================\n"
         )
@@ -204,8 +207,21 @@ class PGM(RDSAnalysis):
             for index, ref_value in enumerate((1, -1)):
 
                 # Preserve physical left/right identity.
-                ref = torch.full((B,), ref_value, dtype=torch.long, device=device)
-                x = NestedTensor(left=img_left, right=img_right, ref=ref)
+                ref = torch.full((B,), ref_value, dtype=torch.long).to(
+                    device, non_blocking=True
+                )
+                if ref_value > 0:
+                    x = NestedTensor(
+                        left=img_left,
+                        right=img_right,
+                        ref=ref,
+                    )
+                else:  # swap inputs
+                    x = NestedTensor(
+                        left=img_right,
+                        right=img_left,
+                        ref=ref,
+                    )
 
                 with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
                     feat_left, feat_right = self.model.encoder(x)
@@ -224,7 +240,7 @@ class PGM(RDSAnalysis):
                 mu_roi = mu[:, y0:y1, x0:x1]
                 pv_roi = posterior_variance[:, y0:y1, x0:x1]
 
-                # ROI-mean disparity for each trial
+                # ROI-mean (spatial-average) disparity for each trial
                 mean_per_trial = mu_roi.mean(dim=(-2, -1))
 
                 # Spatial variance within each trial
@@ -250,9 +266,14 @@ class PGM(RDSAnalysis):
         }
         ref_stats["labels"] = labels.reshape(*condition_shape)
 
+        # save
+        suffix = ".npy"
+        path = Path(self.pgm_dir) / ("ref_stats" + suffix)
+        np.save(path, ref_stats)
+
         return ref_stats
 
-    def compute_monocular_weight(self, ref_stats):
+    def compute_reference_weight(self, ref_stats):
 
         n = self.config.n_rds_each_disp
         # ensure that disparity labels are non-shuffled
@@ -261,37 +282,35 @@ class PGM(RDSAnalysis):
 
         roi_mean = ref_stats["roi_mean"]  # [reference, RDS type, density, trial]
 
-        # variance across trials (across n_rds_each_disp)
+        # variance across n_RDSs (including near and far)
         # [reference, dotMatch, dotDens]
-        var_near = roi_mean[..., :n].var(axis=-1, ddof=1)
-        var_far = roi_mean[..., n:].var(axis=-1, ddof=1)
+        var = roi_mean.var(axis=-1, ddof=1)
 
         # compute weight
         eps = 1e-8
 
         # Each has shape [RDS type, density]
-        v_left_near = var_near[0]
-        v_right_near = var_near[1]
-
-        v_left_far = var_far[0]
-        v_right_far = var_far[1]
+        v_left = var[0]
+        v_right = var[1]
 
         # weight for left-reference
         # [dotMatch, dotDens]
-        w_left_near = v_right_near / (v_left_near + v_right_near + eps)
-        w_left_far = v_right_far / (v_left_far + v_right_far + eps)
+        w_left = v_right / (v_left + v_right + eps)
 
         # weight for right-reference
         # [dotMatch, dotDens]
-        w_right_near = 1.0 - w_left_near
-        w_right_far = 1.0 - w_left_far
+        w_right = 1.0 - w_left
 
-        w_near = np.asarray([w_left_near, w_right_near])
-        w_far = np.asarray([w_left_far, w_right_far])
+        w_ref = np.asarray([w_left, w_right])  # [2, dotMatch, dotDens]
 
-        return w_near, w_far
+        # save
+        suffix = ".npy"
+        path = Path(self.pgm_dir) / ("reference_weight" + suffix)
+        np.save(path, w_ref)
 
-    def compute_expected_disp(self, ref_stats, w_near, w_far):
+        return w_ref
+
+    def compute_expected_disp(self, ref_stats, w_ref):
 
         n = self.config.n_rds_each_disp
         # ensure that disparity labels are non-shuffled
@@ -301,15 +320,22 @@ class PGM(RDSAnalysis):
 
         # average across trials (across n_rds_each_disp)
         # [reference, dotMatch, dotDens]
-        mean_near = roi_mean[..., :n].mean(axis=-1)
-        mean_far = roi_mean[..., n:].mean(axis=-1)
+        mean_far = roi_mean[..., :n].mean(axis=-1)
+        mean_near = roi_mean[..., n:].mean(axis=-1)
 
         # compute expected disparity, [dotMatch, dotDens]
         # rho = np.repeat([[0.0], [0.5], [1.0]], 9, axis=1)
-        # E_near = w_left_near * mean_near[0] + w_right_near * mean_far[1]
-        # E_far = w_left_far * mean_far[0] + w_right_far * mean_near[1]
-        E_near = w_near[0] * mean_near[0] + w_near[1] * mean_far[1]
-        E_far = w_far[0] * mean_far[0] + w_far[1] * mean_near[1]
+        # E_near = w_ref[0] * mean_near[0] + w_ref[1] * mean_far[1]
+        # E_far = w_ref[0] * mean_far[0] + w_ref[1] * mean_near[1]
+        E_near = w_ref[0] * mean_near[0] + w_ref[1] * mean_near[1]
+        E_far = w_ref[0] * mean_far[0] + w_ref[1] * mean_far[1]
+
+        # save
+        suffix = ".npy"
+        path = Path(self.pgm_dir) / ("expected_disp_near" + suffix)
+        np.save(path, E_near)
+        path = Path(self.pgm_dir) / ("expected_disp_far" + suffix)
+        np.save(path, E_far)
 
         return E_near, E_far
 
@@ -367,13 +393,211 @@ class PGM(RDSAnalysis):
             )
 
         # Clear the current axes.
-        plt.cla()
-        # Clear the current figure.
-        plt.clf()
-        # Closes all the figure windows.
-        plt.close("all")
-        plt.close(fig)
-        gc.collect()
+        # plt.cla()
+        # # Clear the current figure.
+        # plt.clf()
+        # # Closes all the figure windows.
+        # plt.close("all")
+        # plt.close(fig)
+        # gc.collect()
+
+    def plot_expected_disp_seeds(self, save_flag: bool = True):
+        """
+        Plot expected_disp averaged across all seed numbers for a given
+        binocular interaction
+
+        """
+
+        E_near_seeds = np.empty(
+            (
+                len(self.config.seed_to_analyse),
+                len(self.config.dotMatch_list),
+                len(self.config.dotDens_list),
+            ),
+            dtype=np.float32,
+        )
+        E_far_seeds = np.empty(
+            (
+                len(self.config.seed_to_analyse),
+                len(self.config.dotMatch_list),
+                len(self.config.dotDens_list),
+            ),
+            dtype=np.float32,
+        )
+
+        # load expected_disp_near and far all seeds
+        for s, seed in enumerate(self.config.seed_to_analyse):
+
+            # interaction = "sum_diff"
+            if self.binocular_interaction == "default":
+                epoch2load, iter2load = self.config.epoch_iter_to_load_default[s]
+            elif self.binocular_interaction == "bem":
+                epoch2load, iter2load = self.config.epoch_iter_to_load_bem[s]
+            elif self.binocular_interaction == "cmm":
+                epoch2load, iter2load = self.config.epoch_iter_to_load_cmm[s]
+            else:  # sum_diff
+                epoch2load, iter2load = self.config.epoch_iter_to_load_sum_diff[s]
+            # s = 0
+
+            path = Path(self.save_dir, f"experiment_{seed}", f"pgm_iter_{iter2load}")
+            E_near = np.load(f"{path}/expected_disp_near.npy")  # [dotMatch, dotDens]
+            E_far = np.load(f"{path}/expected_disp_far.npy")
+
+            # store to buffer
+            E_near_seeds[s] = E_near
+            E_far_seeds[s] = E_far
+
+        # average across seeds, [dotMatch, dotDens]
+        E_near_mean = E_near_seeds.mean(axis=0)
+        E_far_mean = E_far_seeds.mean(axis=0)
+        E_near_sem = sem(E_near_seeds, axis=0)
+        E_far_sem = sem(E_far_seeds, axis=0)
+
+        # start plotting
+        stim_labels = ["aRDS", "hmRDS", "cRDS"]
+        markersize = 8
+
+        sns.set_theme(context="paper", style="ticks", font_scale=2, palette="deep")
+
+        figsize = (9, 6)
+        n_row = 1
+        n_col = 1
+
+        fig, axes = plt.subplots(
+            nrows=n_row, ncols=n_col, figsize=figsize, sharex=True, sharey=True
+        )
+
+        fig.text(
+            0.5,
+            1.0,
+            f"Expected disparity (interaction: {self.binocular_interaction})",
+            ha="center",
+            fontweight="semibold",
+        )
+        fig.text(-0.05, 0.5, "Expected disp [px]", va="center", rotation=90)
+        fig.text(0.5, -0.04, "Dot density", ha="center")
+
+        fig.tight_layout()
+        plt.subplots_adjust(wspace=0.2, hspace=0.3)
+
+        ## plot E_near
+        colors = ["#6a5acd", "#00CED1", "#333333"]
+        x = np.array(self.dotDens_list)
+        for i in range(len(self.config.dotMatch_list)):
+            y = E_near_mean[i]
+            y_err = E_near_sem[i]
+
+            axes.plot(
+                x,
+                y,
+                lw=2,
+                c=colors[i],
+                ls="-",
+            )
+
+            # plot the marker
+            axes.plot(x, y, "o", markersize=markersize, c=colors[i])
+
+            axes.fill_between(
+                x, y - y_err, y + y_err, color=colors[i], alpha=0.2, lw=0, zorder=2
+            )
+
+        ## plot E_far
+        for i in range(len(self.config.dotMatch_list)):
+            y = E_far_mean[i]
+            y_err = E_far_sem[i]
+
+            axes.plot(
+                x,
+                y,
+                lw=2,
+                c=colors[i],
+                ls="--",
+            )
+
+            # plot the marker
+            axes.plot(x, y, "o", markersize=markersize, c=colors[i])
+
+            axes.fill_between(
+                x, y - y_err, y + y_err, color=colors[i], alpha=0.2, lw=0, zorder=2
+            )
+
+        # plot zero disparity
+        axes.hlines(
+            y=0.0, xmin=0.0, xmax=1.0, colors="red", linestyles="--", linewidth=2
+        )
+
+        x_low = 0.0
+        x_up = 1.05
+        x_step = 0.1
+        y_low = -15.0
+        y_up = 15.5
+        y_step = 5
+
+        axes.set_xticks(np.round(np.arange(x_low, x_up, x_step), 2))
+        axes.set_xticklabels(np.round(np.arange(x_low, x_up, x_step), 2))
+        axes.set_yticks(np.round(np.arange(y_low, y_up, y_step), 2))
+        axes.set_yticklabels(np.round(np.arange(y_low, y_up, y_step), 2))
+
+        axes.set_xlim(x_low, x_up)
+        axes.set_ylim(y_low, y_up)
+
+        ## legend
+        # one legend explaining colour (stimulus) and one explaining line style
+        stim_handles = [
+            Line2D(
+                [0],
+                [0],
+                color=c,
+                lw=3,
+                marker="o",
+                markersize=markersize,
+                markeredgecolor="white",
+                markeredgewidth=1.5,
+            )
+            for c in colors
+        ]
+        style_handles = [
+            Line2D([0], [0], color="gray", lw=2.5, ls="-"),
+            Line2D([0], [0], color="gray", lw=2.5, ls="--"),
+        ]
+
+        leg1 = axes.legend(
+            stim_handles,
+            stim_labels,
+            title="Stimulus",
+            frameon=False,
+            loc="upper left",
+            bbox_to_anchor=(1.02, 1.0),
+            alignment="left",
+        )
+        axes.add_artist(leg1)
+        axes.legend(
+            style_handles,
+            ["Near", "Far"],
+            title="Disparity",
+            frameon=False,
+            loc="upper left",
+            bbox_to_anchor=(1.02, 0.55),
+            alignment="left",
+        )
+
+        # Hide the right and top spines
+        axes.spines["right"].set_visible(False)
+        axes.spines["top"].set_visible(False)
+
+        # Only show ticks on the left and bottom spines
+        axes.yaxis.set_ticks_position("left")
+        axes.xaxis.set_ticks_position("bottom")
+
+        if save_flag == 1:
+            if not os.path.exists(f"{self.save_dir}/plots"):
+                os.mkdir(f"{self.save_dir}/plots")
+            fig.savefig(
+                f"{self.save_dir}/plots/PlotLine_expected_disp_avg_seeds_{self.binocular_interaction}.pdf",
+                dpi=600,
+                bbox_inches="tight",
+            )
 
     def plot_mean_disp_unweighted(self, ref_stats, save_flag: bool = True):
 
@@ -385,8 +609,8 @@ class PGM(RDSAnalysis):
 
         # average across trials (across n_rds_each_disp)
         # [reference, dotMatch, dotDens]
-        mean_near = roi_mean[..., :n].mean(axis=-1)
-        mean_far = roi_mean[..., n:].mean(axis=-1)
+        mean_far = roi_mean[..., :n].mean(axis=-1)
+        mean_near = roi_mean[..., n:].mean(axis=-1)
 
         sns.set_theme(context="paper", style="white", font_scale=2, palette="deep")
 
@@ -447,14 +671,14 @@ class PGM(RDSAnalysis):
                 bbox_inches="tight",
             )
 
-        # Clear the current axes.
-        plt.cla()
-        # Clear the current figure.
-        plt.clf()
-        # Closes all the figure windows.
-        plt.close("all")
-        plt.close(fig)
-        gc.collect()
+        # # Clear the current axes.
+        # plt.cla()
+        # # Clear the current figure.
+        # plt.clf()
+        # # Closes all the figure windows.
+        # plt.close("all")
+        # plt.close(fig)
+        # gc.collect()
 
     def plot_variance(self, ref_stats, save_flag: bool = True):
 
@@ -467,8 +691,8 @@ class PGM(RDSAnalysis):
 
         # variance across trials (across n_rds_each_disp)
         # [reference, dotMatch, dotDens]
-        var_near = roi_mean[..., :n].var(axis=-1, ddof=1)
-        var_far = roi_mean[..., n:].var(axis=-1, ddof=1)
+        var_far = roi_mean[..., :n].var(axis=-1, ddof=1)
+        var_near = roi_mean[..., n:].var(axis=-1, ddof=1)
 
         sns.set_theme(context="paper", style="white", font_scale=2, palette="deep")
 
@@ -504,7 +728,7 @@ class PGM(RDSAnalysis):
             ax.set_xlabel("Dot density")
             ax.set_title(condition)
             ax.set_xticks(dotDens)
-            ax.grid(alpha=0.2)
+            # ax.grid(alpha=0.2)
 
         axes[0].set_ylabel("Across-trial variance of ROI mean (px²)")
         axes[1].legend(fontsize=8, ncol=2)
@@ -538,13 +762,15 @@ class PGM(RDSAnalysis):
         plt.close(fig)
         gc.collect()
 
-    def plot_monocular_weight(self, w_near, w_far, save_flag: bool = True):
+    def plot_reference_weight(
+        self, w_ref: Float[np.ndarray, "ref dotMatch dotDens"], save_flag: bool = True
+    ):
 
         dotDens = np.asarray(self.dotDens_list)
         rds_names = ["aRDS", "hmRDS", "cRDS"]
 
-        w_left_near = w_near[0]
-        w_left_far = w_far[0]
+        w_left = w_ref[0]
+        w_right = w_ref[1]
 
         sns.set_theme(context="paper", style="white", font_scale=2, palette="deep")
 
@@ -556,8 +782,8 @@ class PGM(RDSAnalysis):
         for ax, (condition, weights) in zip(
             axes,
             [
-                ("Near", w_left_near),
-                ("Far", w_left_far),
+                ("Left-reference", w_left),
+                ("Right-reference", w_right),
             ],
         ):
             for c, name in enumerate(rds_names):
@@ -593,7 +819,7 @@ class PGM(RDSAnalysis):
 
         if save_flag:
             plt.savefig(
-                f"{self.pgm_plot_dir}/plot_monocular_weight.pdf",
+                f"{self.pgm_plot_dir}/plot_reference_weight.pdf",
                 dpi=600,
                 bbox_inches="tight",
             )
@@ -606,3 +832,201 @@ class PGM(RDSAnalysis):
         plt.close("all")
         plt.close(fig)
         gc.collect()
+
+    def plot_reference_weights_seeds(self, save_flag: bool = True):
+        """
+        Plot monocular weights averaged across all seed numbers for a given
+        binocular interaction
+
+        """
+
+        w_left_near_seeds = np.empty(
+            (
+                len(self.config.seed_to_analyse),
+                len(self.config.dotMatch_list),
+                len(self.config.dotDens_list),
+            ),
+            dtype=np.float32,
+        )
+        w_left_far_seeds = np.empty(
+            (
+                len(self.config.seed_to_analyse),
+                len(self.config.dotMatch_list),
+                len(self.config.dotDens_list),
+            ),
+            dtype=np.float32,
+        )
+
+        # load expected_disp_near and far all seeds
+        for s, seed in enumerate(self.config.seed_to_analyse):
+
+            # interaction = "sum_diff"
+            if self.binocular_interaction == "default":
+                epoch2load, iter2load = self.config.epoch_iter_to_load_default[s]
+            elif self.binocular_interaction == "bem":
+                epoch2load, iter2load = self.config.epoch_iter_to_load_bem[s]
+            elif self.binocular_interaction == "cmm":
+                epoch2load, iter2load = self.config.epoch_iter_to_load_cmm[s]
+            else:  # sum_diff
+                epoch2load, iter2load = self.config.epoch_iter_to_load_sum_diff[s]
+            # s = 0
+
+            path = Path(self.save_dir, f"experiment_{seed}", f"pgm_iter_{iter2load}")
+            w_near = np.load(f"{path}/monocular_weight_near.npy")  # [dotMatch, dotDens]
+            w_far = np.load(f"{path}/monocular_weight_far.npy")
+
+            # store to buffer
+            w_left_near_seeds[s] = E_near
+            w_left_far_seeds[s] = E_far
+
+        # average across seeds, [dotMatch, dotDens]
+        E_near_mean = w_left_near_seeds.mean(axis=0)
+        E_far_mean = w_left_far_seeds.mean(axis=0)
+        E_near_sem = sem(w_left_near_seeds, axis=0)
+        E_far_sem = sem(w_left_far_seeds, axis=0)
+
+        # start plotting
+        stim_labels = ["aRDS", "hmRDS", "cRDS"]
+        markersize = 8
+
+        sns.set_theme(context="paper", style="ticks", font_scale=2, palette="deep")
+
+        figsize = (9, 6)
+        n_row = 1
+        n_col = 1
+
+        fig, axes = plt.subplots(
+            nrows=n_row, ncols=n_col, figsize=figsize, sharex=True, sharey=True
+        )
+
+        fig.text(
+            0.5,
+            1.0,
+            f"Expected disparity (interaction: {self.binocular_interaction})",
+            ha="center",
+            fontweight="semibold",
+        )
+        fig.text(-0.05, 0.5, "Expected disp [px]", va="center", rotation=90)
+        fig.text(0.5, -0.04, "Dot density", ha="center")
+
+        fig.tight_layout()
+        plt.subplots_adjust(wspace=0.2, hspace=0.3)
+
+        ## plot E_near
+        colors = ["#6a5acd", "#00CED1", "#333333"]
+        x = np.array(self.dotDens_list)
+        for i in range(len(self.config.dotMatch_list)):
+            y = E_near_mean[i]
+            y_err = E_near_sem[i]
+
+            axes.plot(
+                x,
+                y,
+                lw=2,
+                c=colors[i],
+                ls="-",
+            )
+
+            # plot the marker
+            axes.plot(x, y, "o", markersize=markersize, c=colors[i])
+
+            axes.fill_between(
+                x, y - y_err, y + y_err, color=colors[i], alpha=0.2, lw=0, zorder=2
+            )
+
+        ## plot E_far
+        for i in range(len(self.config.dotMatch_list)):
+            y = E_far_mean[i]
+            y_err = E_far_sem[i]
+
+            axes.plot(
+                x,
+                y,
+                lw=2,
+                c=colors[i],
+                ls="--",
+            )
+
+            # plot the marker
+            axes.plot(x, y, "o", markersize=markersize, c=colors[i])
+
+            axes.fill_between(
+                x, y - y_err, y + y_err, color=colors[i], alpha=0.2, lw=0, zorder=2
+            )
+
+        # plot zero disparity
+        axes.hlines(
+            y=0.0, xmin=0.0, xmax=1.0, colors="red", linestyles="--", linewidth=2
+        )
+
+        x_low = 0.0
+        x_up = 1.05
+        x_step = 0.1
+        y_low = -15.0
+        y_up = 15.5
+        y_step = 5
+
+        axes.set_xticks(np.round(np.arange(x_low, x_up, x_step), 2))
+        axes.set_xticklabels(np.round(np.arange(x_low, x_up, x_step), 2))
+        axes.set_yticks(np.round(np.arange(y_low, y_up, y_step), 2))
+        axes.set_yticklabels(np.round(np.arange(y_low, y_up, y_step), 2))
+
+        axes.set_xlim(x_low, x_up)
+        axes.set_ylim(y_low, y_up)
+
+        ## legend
+        # one legend explaining colour (stimulus) and one explaining line style
+        stim_handles = [
+            Line2D(
+                [0],
+                [0],
+                color=c,
+                lw=3,
+                marker="o",
+                markersize=markersize,
+                markeredgecolor="white",
+                markeredgewidth=1.5,
+            )
+            for c in colors
+        ]
+        style_handles = [
+            Line2D([0], [0], color="gray", lw=2.5, ls="-"),
+            Line2D([0], [0], color="gray", lw=2.5, ls="--"),
+        ]
+
+        leg1 = axes.legend(
+            stim_handles,
+            stim_labels,
+            title="Stimulus",
+            frameon=False,
+            loc="upper left",
+            bbox_to_anchor=(1.02, 1.0),
+            alignment="left",
+        )
+        axes.add_artist(leg1)
+        axes.legend(
+            style_handles,
+            ["Near", "Far"],
+            title="Disparity",
+            frameon=False,
+            loc="upper left",
+            bbox_to_anchor=(1.02, 0.55),
+            alignment="left",
+        )
+
+        # Hide the right and top spines
+        axes.spines["right"].set_visible(False)
+        axes.spines["top"].set_visible(False)
+
+        # Only show ticks on the left and bottom spines
+        axes.yaxis.set_ticks_position("left")
+        axes.xaxis.set_ticks_position("bottom")
+
+        if save_flag == 1:
+            if not os.path.exists(f"{self.save_dir}/Plots"):
+                os.mkdir(f"{self.save_dir}/Plots")
+            fig.savefig(
+                f"{self.save_dir}/Plots/PlotLine_ref_weights_avg_seeds_{self.binocular_interaction}.pdf",
+                dpi=600,
+                bbox_inches="tight",
+            )

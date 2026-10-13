@@ -301,7 +301,12 @@ def _load_stereo_sample(dataset, idx):
     if dataset.transformation is not None:
         dataset.transformation.set_random_seed(sample_seed)
 
-    # use left eye as reference and its ground truth for training if p <= 0.5
+    # use left eye as reference in the cost volume construction and
+    # to use its ground truth for training if p <= 0.5, else use right eye.
+    # Here, the left and right images remain the inputs for the left and
+    # right input channels of the network, respectively (not swapped).
+    # When the right eye is used as the reference, the ground truth is
+    # multiplied by -1 (see random_crop method in stereo_albumentation.py)
     reference = 1 if rng.random() <= 0.5 else -1
     path = left_path if reference == 1 else right_path
     path = path.replace("frames_cleanpass", "disparity").replace(".png", ".pfm")
