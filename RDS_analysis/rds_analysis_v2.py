@@ -23,7 +23,6 @@ from BNN.modules.bnn import build_bnn
 from GC_Net.modules.gcnet import build_gcnet
 from GC_Net_L.modules.gcnet import build_gcnet
 from GC_Net_LR.modules.gcnet import build_gcnet
-from GC_NetGN_LR.modules.gcnet import build_gcnet
 from config.config_bnn import ConfigBNN
 from config.config_gcnet import ConfigGCNet
 from config.config_gcnet_left import ConfigGCNet

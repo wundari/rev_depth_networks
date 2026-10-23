@@ -9,11 +9,11 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from matplotlib.lines import Line2D
-from matplotlib.ticker import FormatStrFormatter
 
 from pathlib import Path
 from tqdm import tqdm
 from scipy.stats import sem
+from scipy.special import expit
 from jaxtyping import Float, Int
 
 from config.config_gcnet_lr import ConfigGCNet
@@ -153,10 +153,12 @@ class PGM(RDSAnalysis):
                 [y_start, y_end, x_start, x_end]
 
         Returns:
-            outputs{"roi_mean": [2, n_types, n_densities, n_trials],
-                    "spatial_var": [2, n_types, n_densities, n_trials],
-                    "posterior_var": [2, n_types, n_densities, n_trials],
-                    "labels"}
+            outputs{"roi_mean": [2, dotMatch, dotDens, 2*n_rds_each_disp],
+                    "spatial_var": [2, dotMatch, dotDens, 2*n_rds_each_disp],
+                    "posterior_var": [2, dotMatch, dotDens, 2*n_rds_each_disp],
+                    "posterior_near": [2, dotMatch, dotDens, 2*n_rds_each_disp, h_roi, w_roi],
+                    "posterior_far": [2, dotMatch, dotDens, 2*n_rds_each_disp, h_roi, w_roi],
+                    "labels": [dotMatch, dotDens, 2*n_rds_each_disp]}
 
                 note: Axis 0 denotes the left/right reference:
                     0 = left reference (+1)
@@ -174,10 +176,15 @@ class PGM(RDSAnalysis):
             raise ValueError(
                 "The RDS bank must use sequential sampling and drop_last=False"
             )
-        condition_shape = dataset.condition_shape
+        condition_shape = (
+            dataset.condition_shape
+        )  # [dotMatch, dotDens, 2*n_rds_each_disp]
         n_samples = len(dataset)
 
         # allocate buffer
+        y0, y1, x0, x1 = roi
+        # h_roi = y1 - y0
+        # w_roi = x1 - x0
         ref_stats = {
             name: np.empty(
                 (2, n_samples),
@@ -186,11 +193,23 @@ class PGM(RDSAnalysis):
             for name in (
                 "roi_mean",
                 "spatial_var",
+                "posterior_near",
+                "posterior_far",
                 "posterior_var",
             )
         }
-
+        ref_stats["posterior_roi"] = np.empty(
+            (2, n_samples, self.model.disp_indices.shape[1]), dtype=np.float32
+        )
+        # ref_stats["posterior_near"] = np.empty((2, n_samples), dtype=np.float32)
+        # ref_stats["posterior_far"] = np.empty((2, n_samples), dtype=np.float32)
         labels = np.empty(n_samples, dtype=np.int16)
+
+        # disparity bins: [1, D, 1, 1] buffer, plus 1-D version for masking
+        # disp_indices = self.model.disp_indices  # [1, D, 1, 1]
+        disp_1d = self.model.disp_indices.flatten()  # [D]
+        bins_near = disp_1d > 0
+        bins_far = disp_1d < 0
 
         y0, y1, x0, x1 = roi
         offset = 0
@@ -204,19 +223,17 @@ class PGM(RDSAnalysis):
             labels[offset : offset + B] = target_disp.cpu().numpy()
 
             # iterate over left and right references
-            for index, ref_value in enumerate((1, -1)):
+            for ref_idx, ref_value in enumerate((1, -1)):
 
                 # Preserve physical left/right identity.
-                ref = torch.full((B,), ref_value, dtype=torch.long).to(
-                    device, non_blocking=True
-                )
+                ref = torch.full((B,), ref_value, dtype=torch.long, device=device)
                 if ref_value > 0:
                     x = NestedTensor(
                         left=img_left,
                         right=img_right,
                         ref=ref,
                     )
-                else:  # swap inputs
+                else:  # swap inputs for negative reference because for right-reference: near -> far, far -> near
                     x = NestedTensor(
                         left=img_right,
                         right=img_left,
@@ -226,47 +243,75 @@ class PGM(RDSAnalysis):
                 with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
                     feat_left, feat_right = self.model.encoder(x)
 
-                    # posterior P(Z|X) [B, D, H, W]
+                    # logits or posterior P(Z|X) [B, D, H, W]
                     posterior = self.model.decoder(feat_left, feat_right, ref)
-                posterior = posterior.float()
 
-                # Expected disparity map E[Z] = SUM(z * P(Z=z|X)), [B, H, W]
-                mu = (posterior * self.model.disp_indices).sum(dim=1)
+                # select pixels within ROI, [B, D, H_roi, W_roi]
+                posterior = posterior[:, :, y0:y1, x0:x1].float()
 
-                # Posterior variance map, [B, H, W]
-                posterior_variance = (
-                    posterior * (self.model.disp_indices - mu.unsqueeze(1)).square()
+                # average posterior within roi, [B, D]
+                posterior_roi = posterior.mean(dim=(-2, -1))
+
+                # Expected disparity map E[Z] = SUM(z * P(Z=z|X)), [B, H_roi, W_roi]
+                mu_roi = (posterior * self.model.disp_indices).sum(dim=1)
+
+                # Posterior variance map within ROI, [B, H_roi, W_roi]
+                posterior_var_roi = (
+                    posterior * (self.model.disp_indices - mu_roi.unsqueeze(1)).square()
                 ).sum(dim=1)
-                mu_roi = mu[:, y0:y1, x0:x1]
-                pv_roi = posterior_variance[:, y0:y1, x0:x1]
 
-                # ROI-mean (spatial-average) disparity for each trial
+                # ROI-mean (spatial-average) disparity for each trial, [B]
                 mean_per_trial = mu_roi.mean(dim=(-2, -1))
 
-                # Spatial variance within each trial
+                # Spatial variance within each trial, [B]
                 spatial_per_trial = mu_roi.var(dim=(-2, -1), unbiased=False)
 
-                # Mean posterior variance within ROI
-                posterior_per_trial = pv_roi.mean(dim=(-2, -1))
+                # Mean posterior variance within ROI, [B]
+                posterior_per_trial = posterior_var_roi.mean(dim=(-2, -1))
+
+                # For each pixel at (x, y) in each RDS image, find
+                # posterior_near Q(posterior(Z > 0|X, dotMatch, dotDens)) and
+                # posterior_far Q(posterior(Z < 0|X, dotMatch, dotDens)) then
+                # sum the posterior probability over disparity-axis
+                # [B, H_roi, W_roi]
+                # p_near_roi = posterior[:, bins_near].sum(dim=1)
+                # p_far_roi = posterior[:, bins_far].sum(dim=1)
+
+                # spatially-averaged within roi, [B]
+                # p_near = p_near_roi.mean(dim=(-2, -1))
+                # p_far = p_far_roi.mean(dim=(-2, -1))
+
+                # # pixelwise log-odds: log_post_near - log_post_far, [B, H_row * W_row]
+                # # this measures how strong the network believes that particular image
+                # # is near
+                # log_odds = torch.log(p_near_roi) - torch.log(p_far_roi)
+                # # spatially average within roi log_odds
+                # lambda_log = log_odds.mean(dim=(-2, -1))  # [B]
 
                 sl = slice(offset, offset + B)
-                ref_stats["roi_mean"][index, sl] = mean_per_trial.cpu().numpy()
-                ref_stats["spatial_var"][index, sl] = spatial_per_trial.cpu().numpy()
+                ref_stats["roi_mean"][ref_idx, sl] = mean_per_trial.cpu().numpy()
+                ref_stats["spatial_var"][ref_idx, sl] = spatial_per_trial.cpu().numpy()
+                ref_stats["posterior_roi"][ref_idx, sl] = posterior_roi.cpu().numpy()
+                # ref_stats["posterior_near"][ref_idx, sl] = p_near.cpu().numpy()
+                # ref_stats["posterior_far"][ref_idx, sl] = p_far.cpu().numpy()
                 ref_stats["posterior_var"][
-                    index, sl
+                    ref_idx, sl
                 ] = posterior_per_trial.cpu().numpy()
+                # ref_stats["lambda_log"][ref_idx, sl] = lambda_log.cpu().numpy()
 
             offset += B
 
         assert offset == n_samples
 
         ref_stats = {
-            key: values.reshape(2, *condition_shape)
+            key: values.reshape(2, *condition_shape, *values.shape[2:])
             for key, values in ref_stats.items()
-        }
-        ref_stats["labels"] = labels.reshape(*condition_shape)
+        }  # [ref, dotMatch, dotDens, 2*n_rds_each_disp]
+        ref_stats["labels"] = labels.reshape(
+            *condition_shape
+        )  # [dotMatch, dotDens, 2*n_rds_each_disp]
 
-        # save
+        # save (dict is pickled: load with np.load(path, allow_pickle=True).item())
         suffix = ".npy"
         path = Path(self.pgm_dir) / ("ref_stats" + suffix)
         np.save(path, ref_stats)
@@ -280,7 +325,9 @@ class PGM(RDSAnalysis):
         assert np.all(ref_stats["labels"][..., :n] > 0)
         assert np.all(ref_stats["labels"][..., n:] < 0)
 
-        roi_mean = ref_stats["roi_mean"]  # [reference, RDS type, density, trial]
+        roi_mean = ref_stats[
+            "roi_mean"
+        ]  # [reference, dotMatch, dotDens, 2*n_rds_each_disp]
 
         # variance across n_RDSs (including near and far)
         # [reference, dotMatch, dotDens]
@@ -290,12 +337,12 @@ class PGM(RDSAnalysis):
         eps = 1e-8
 
         # Each has shape [RDS type, density]
-        v_left = var[0]
-        v_right = var[1]
+        var_left = var[0]
+        var_right = var[1]
 
         # weight for left-reference
         # [dotMatch, dotDens]
-        w_left = v_right / (v_left + v_right + eps)
+        w_left = var_right / (var_left + var_right + eps)
 
         # weight for right-reference
         # [dotMatch, dotDens]
@@ -309,6 +356,45 @@ class PGM(RDSAnalysis):
         np.save(path, w_ref)
 
         return w_ref
+
+    def weighted_posterior(
+        self,
+        posterior: Float[np.ndarray, "ref dotMatch dotDens n_rds disp"],
+        w_ref: Float[np.ndarray, "ref dotMatch dotDens"],
+        disp_indices: Int[np.ndarray, "disp"],
+    ):
+        """
+        weighted-average posterior_near and posterior_far based on eye-reference weights.
+
+        Args:
+            posterior [ref, dotMatch, dotDens, 2*n_rds_each_disp, disp]: posterior from gcnet
+            w_ref [ref, dotMatch, dotDens]: weights based on eye-reference
+            disp_indices [disp]: np.array([-96, -95, ..., 95])
+
+        Returns:
+            post_weighted [dotMatch, dotDens, 2*n_rds_each_disp, disp]
+            post_near_weighted [dotMatch, dotDens, 2*n_rds_each_disp]
+            post_far_weighted [dotMatch, dotDens, 2*n_rds_each_disp]
+        """
+
+        # weighted-sum posterior based on left and right reference
+        post_weighted = np.einsum(
+            "rmd, rmdnp -> mdnp", w_ref, posterior, optimize=True
+        )  # [dotMatch, dotDens, n_rds, disp]
+
+        # get mask for near and far disparities
+        mask_near = disp_indices > 0
+        mask_far = disp_indices < 0
+
+        # get near and far posterior then sum along disparity axis
+        post_near_weighted = post_weighted[:, :, :, mask_near].sum(
+            axis=-1
+        )  # [dotMatch, dotDens, n_rd]
+        post_far_weighted = post_weighted[:, :, :, mask_far].sum(
+            axis=-1
+        )  # [dotMatch, dotDens, n_rds]
+
+        return post_weighted, post_near_weighted, post_far_weighted
 
     def compute_expected_disp(self, ref_stats, w_ref):
 
@@ -329,6 +415,8 @@ class PGM(RDSAnalysis):
         # E_far = w_ref[0] * mean_far[0] + w_ref[1] * mean_near[1]
         E_near = w_ref[0] * mean_near[0] + w_ref[1] * mean_near[1]
         E_far = w_ref[0] * mean_far[0] + w_ref[1] * mean_far[1]
+        # E_near = w_ref[0] * mean_near[0] + w_ref[1] * rho * mean_near[1]
+        # E_far = w_ref[0] * rho * mean_far[0] + w_ref[1] * mean_far[1]
 
         # save
         suffix = ".npy"
@@ -339,7 +427,86 @@ class PGM(RDSAnalysis):
 
         return E_near, E_far
 
-    def plot_expected_disp(self, E_near, E_far, save_flag: bool = True):
+    def compute_deltaLog(self, ref_stats, w_ref):
+
+        # get roi-averaged posterior
+        posterior = ref_stats[
+            "posterior_roi"
+        ]  # [ref, dotMatch, dotDens, 2*n_rds_each_disp, disp]
+
+        # compute weighted-sum of posterior based on reference-weight
+        disp_indices = self.model.disp_indices.flatten().cpu().numpy()
+        post_weighted, post_near_weighted, post_far_weighted = self.weighted_posterior(
+            posterior, w_ref, disp_indices
+        )  # [dotMatch, dotDens, 2*n_rds_each_disp]
+
+        # compute delta log
+        eps = 1e-12
+        deltaLog_odd = np.log(np.maximum(post_near_weighted, eps)) - np.log(
+            np.maximum(post_far_weighted, eps)
+        )  # [dotMatch, dotDens, 2*n_rds_each_disp]
+
+        return deltaLog_odd
+
+    def compute_prob_x1_x2(
+        self,
+        deltaLog_x1: Float[np.ndarray, "n_samples none"],
+        deltaLog_x2: Float[np.ndarray, "none n_samples"],
+        lapse: float = 0.01,
+        beta: float = -0.75,
+        pos_bias: float = -2,
+    ) -> Float[np.ndarray, "n_samples n_samples"]:
+
+        delta = deltaLog_x1 - deltaLog_x2
+        prob_state = lapse + (1 - lapse) * expit(beta * delta + pos_bias)
+
+        return prob_state
+
+    def simulate_2afc(
+        self, ref_stats, w_ref: Float[np.ndarray, "ref dotMatch dotDens"]
+    ):
+
+        # compute deltaLog, [dotMatch, dotDens, 2*n_rds_each_disp]
+        deltaLog_odd = self.compute_deltaLog(ref_stats, w_ref)
+
+        disp_labels = ref_stats["labels"]  # [dotMatch, dotDens, 2*n_rds_each_disp]
+
+        n_dotMatch, n_dotDens, _ = deltaLog_odd.shape
+        p_corrects = np.empty((n_dotMatch, n_dotDens), dtype=np.float32)
+        p_correct_std = np.empty_like(p_corrects)
+        for dm in range(n_dotMatch):
+            for dd in range(n_dotDens):
+
+                idx_near = np.flatnonzero(disp_labels[dm, dd] > 0)
+                idx_far = np.flatnonzero(disp_labels[dm, dd] < 0)
+
+                deltaLog_near = deltaLog_odd[dm, dd, idx_near]  # [n_rds]
+                deltaLog_far = deltaLog_odd[dm, dd, idx_far]  # [n_rds]
+
+                # state 1: x1 = near, x2 = far (x1 is the correct response)
+                p_correct = self.compute_prob_x1_x2(
+                    deltaLog_near[:, None], deltaLog_far[None, :]
+                )  # [n_rds, n_rds]
+
+                use = ~np.eye(len(idx_near), dtype=bool)
+                p_corrects[dm, dd] = p_correct[use].mean()
+                p_correct_std[dm, dd] = p_correct[use].std()
+
+        # save data
+        suffix = ".npy"
+        path = Path(self.pgm_dir) / ("p_2afc" + suffix)
+        np.save(path, p_corrects)
+        path = Path(self.pgm_dir) / ("p_2afc_std" + suffix)
+        np.save(path, p_correct_std)
+
+        return p_corrects, p_correct_std
+
+    def plot_expected_disp(
+        self,
+        E_near: Float[np.ndarray, "dotMatch dotDens"],
+        E_far: Float[np.ndarray, "dotMatch dotDens"],
+        save_flag: bool = True,
+    ):
 
         sns.set_theme(context="paper", style="white", font_scale=2, palette="deep")
 
@@ -680,7 +847,7 @@ class PGM(RDSAnalysis):
         # plt.close(fig)
         # gc.collect()
 
-    def plot_variance(self, ref_stats, save_flag: bool = True):
+    def plot_pred_disp_variance(self, ref_stats, save_flag: bool = True):
 
         n = self.config.n_rds_each_disp
         # ensure that disparity labels are non-shuffled
@@ -840,7 +1007,7 @@ class PGM(RDSAnalysis):
 
         """
 
-        w_left_near_seeds = np.empty(
+        w_left_seeds = np.empty(
             (
                 len(self.config.seed_to_analyse),
                 len(self.config.dotMatch_list),
@@ -848,7 +1015,7 @@ class PGM(RDSAnalysis):
             ),
             dtype=np.float32,
         )
-        w_left_far_seeds = np.empty(
+        w_right_seeds = np.empty(
             (
                 len(self.config.seed_to_analyse),
                 len(self.config.dotMatch_list),
@@ -871,20 +1038,179 @@ class PGM(RDSAnalysis):
                 epoch2load, iter2load = self.config.epoch_iter_to_load_sum_diff[s]
             # s = 0
 
+            # load reference weights
             path = Path(self.save_dir, f"experiment_{seed}", f"pgm_iter_{iter2load}")
-            w_near = np.load(f"{path}/monocular_weight_near.npy")  # [dotMatch, dotDens]
-            w_far = np.load(f"{path}/monocular_weight_far.npy")
+            w_ref = np.load(f"{path}/reference_weight.npy")  # [2, dotMatch, dotDens]
 
             # store to buffer
-            w_left_near_seeds[s] = E_near
-            w_left_far_seeds[s] = E_far
+            w_left_seeds[s] = w_ref[0]
+            w_right_seeds[s] = w_ref[1]
 
         # average across seeds, [dotMatch, dotDens]
-        E_near_mean = w_left_near_seeds.mean(axis=0)
-        E_far_mean = w_left_far_seeds.mean(axis=0)
-        E_near_sem = sem(w_left_near_seeds, axis=0)
-        E_far_sem = sem(w_left_far_seeds, axis=0)
+        w_left_mean = w_left_seeds.mean(axis=0)
+        w_right_mean = w_right_seeds.mean(axis=0)
+        w_left_sem = sem(w_left_seeds, axis=0)
+        w_right_sem = sem(w_right_seeds, axis=0)
 
+        # start plotting
+        stim_labels = ["aRDS", "hmRDS", "cRDS"]
+        markersize = 8
+
+        sns.set_theme(context="paper", style="ticks", font_scale=2, palette="deep")
+
+        figsize = (15, 5)
+        n_row = 1
+        n_col = 2
+
+        fig, axes = plt.subplots(
+            nrows=n_row, ncols=n_col, figsize=figsize, sharex=True, sharey=True
+        )
+
+        fig.text(
+            0.5,
+            1.0,
+            f"Reference weight (interaction: {self.binocular_interaction})",
+            ha="center",
+            fontweight="semibold",
+        )
+        fig.text(-0.03, 0.5, "w_ref", va="center", rotation=90)
+        fig.text(0.5, -0.04, "Dot density", ha="center")
+
+        fig.tight_layout()
+        plt.subplots_adjust(wspace=0.2, hspace=0.3)
+
+        ## plot w_left
+        colors = ["#6a5acd", "#00CED1", "#333333"]
+        x = np.array(self.dotDens_list)
+        for i in range(len(self.config.dotMatch_list)):
+            y = w_left_mean[i]
+            y_err = w_left_sem[i]
+
+            axes[0].plot(
+                x,
+                y,
+                lw=2,
+                c=colors[i],
+                ls="-",
+            )
+
+            # plot the marker
+            axes[0].plot(x, y, "o", markersize=markersize, c=colors[i])
+
+            axes[0].fill_between(
+                x, y - y_err, y + y_err, color=colors[i], alpha=0.2, lw=0, zorder=2
+            )
+
+        # plot middle weight
+        axes[0].hlines(
+            y=0.5, xmin=0.0, xmax=1.0, colors="red", linestyles="--", linewidth=2
+        )
+
+        x_low = 0.0
+        x_up = 1.05
+        x_step = 0.1
+        y_low = 0.3
+        y_up = 0.65
+        y_step = 0.1
+
+        axes[0].set_title("Left-reference")
+        axes[0].set_xticks(np.round(np.arange(x_low, x_up, x_step), 2))
+        axes[0].set_xticklabels(np.round(np.arange(x_low, x_up, x_step), 2))
+        axes[0].set_yticks(np.round(np.arange(y_low, y_up, y_step), 2))
+        axes[0].set_yticklabels(np.round(np.arange(y_low, y_up, y_step), 2))
+
+        axes[0].set_xlim(x_low, x_up)
+        axes[0].set_ylim(y_low, y_up)
+
+        # Hide the right and top spines
+        axes[0].spines["right"].set_visible(False)
+        axes[0].spines["top"].set_visible(False)
+
+        # Only show ticks on the left and bottom spines
+        axes[0].yaxis.set_ticks_position("left")
+        axes[0].xaxis.set_ticks_position("bottom")
+
+        ## plot w_right
+        for i in range(len(self.config.dotMatch_list)):
+            y = w_right_mean[i]
+            y_err = w_right_sem[i]
+
+            axes[1].plot(
+                x,
+                y,
+                lw=2,
+                c=colors[i],
+                ls="-",
+            )
+
+            # plot the marker
+            axes[1].plot(x, y, "o", markersize=markersize, c=colors[i])
+
+            axes[1].fill_between(
+                x, y - y_err, y + y_err, color=colors[i], alpha=0.2, lw=0, zorder=2
+            )
+
+        # plot middle weight
+        axes[1].hlines(
+            y=0.5, xmin=0.0, xmax=1.0, colors="red", linestyles="--", linewidth=2
+        )
+
+        axes[1].set_title("Right-reference")
+        axes[1].set_xticks(np.round(np.arange(x_low, x_up, x_step), 2))
+        axes[1].set_xticklabels(np.round(np.arange(x_low, x_up, x_step), 2))
+        axes[1].set_yticks(np.round(np.arange(y_low, y_up, y_step), 2))
+        axes[1].set_yticklabels(np.round(np.arange(y_low, y_up, y_step), 2))
+
+        axes[1].set_xlim(x_low, x_up)
+        axes[1].set_ylim(y_low, y_up)
+
+        # Hide the right and top spines
+        axes[1].spines["right"].set_visible(False)
+        axes[1].spines["top"].set_visible(False)
+
+        # Only show ticks on the left and bottom spines
+        axes[1].yaxis.set_ticks_position("left")
+        axes[1].xaxis.set_ticks_position("bottom")
+
+        ## legend
+        # one legend explaining colour (stimulus) and one explaining line style
+        stim_handles = [
+            Line2D(
+                [0],
+                [0],
+                color=c,
+                lw=3,
+                marker="o",
+                markersize=markersize,
+                markeredgecolor="white",
+                markeredgewidth=1.5,
+            )
+            for c in colors
+        ]
+        leg1 = axes[1].legend(
+            stim_handles,
+            stim_labels,
+            frameon=False,
+            loc="lower right",
+            alignment="left",
+        )
+        axes[1].add_artist(leg1)
+
+        if save_flag == 1:
+            if not os.path.exists(f"{self.save_dir}/plots"):
+                os.mkdir(f"{self.save_dir}/plots")
+            fig.savefig(
+                f"{self.save_dir}/plots/PlotLine_ref_weights_avg_seeds_{self.binocular_interaction}.pdf",
+                dpi=600,
+                bbox_inches="tight",
+            )
+
+    def plotLine_2afc_performance(
+        self,
+        p_2afc: Float[np.ndarray, "dotMatch dotDens"],
+        p_2afc_std: Float[np.ndarray, "dotMatch dotDens"],
+        save_flag: bool = True,
+    ):
         # start plotting
         stim_labels = ["aRDS", "hmRDS", "cRDS"]
         markersize = 8
@@ -902,11 +1228,11 @@ class PGM(RDSAnalysis):
         fig.text(
             0.5,
             1.0,
-            f"Expected disparity (interaction: {self.binocular_interaction})",
+            f"2-AFC performance (interaction: {self.binocular_interaction} / seed: {self.seed})",
             ha="center",
             fontweight="semibold",
         )
-        fig.text(-0.05, 0.5, "Expected disp [px]", va="center", rotation=90)
+        fig.text(-0.05, 0.5, "Prediction accuracy", va="center", rotation=90)
         fig.text(0.5, -0.04, "Dot density", ha="center")
 
         fig.tight_layout()
@@ -916,8 +1242,8 @@ class PGM(RDSAnalysis):
         colors = ["#6a5acd", "#00CED1", "#333333"]
         x = np.array(self.dotDens_list)
         for i in range(len(self.config.dotMatch_list)):
-            y = E_near_mean[i]
-            y_err = E_near_sem[i]
+            y = p_2afc[i]
+            y_err = p_2afc_std[i]
 
             axes.plot(
                 x,
@@ -934,37 +1260,17 @@ class PGM(RDSAnalysis):
                 x, y - y_err, y + y_err, color=colors[i], alpha=0.2, lw=0, zorder=2
             )
 
-        ## plot E_far
-        for i in range(len(self.config.dotMatch_list)):
-            y = E_far_mean[i]
-            y_err = E_far_sem[i]
-
-            axes.plot(
-                x,
-                y,
-                lw=2,
-                c=colors[i],
-                ls="--",
-            )
-
-            # plot the marker
-            axes.plot(x, y, "o", markersize=markersize, c=colors[i])
-
-            axes.fill_between(
-                x, y - y_err, y + y_err, color=colors[i], alpha=0.2, lw=0, zorder=2
-            )
-
-        # plot zero disparity
+        # plot chance level
         axes.hlines(
-            y=0.0, xmin=0.0, xmax=1.0, colors="red", linestyles="--", linewidth=2
+            y=0.5, xmin=0.0, xmax=1.0, colors="red", linestyles="--", linewidth=2
         )
 
         x_low = 0.0
         x_up = 1.05
         x_step = 0.1
-        y_low = -15.0
-        y_up = 15.5
-        y_step = 5
+        y_low = 0.0
+        y_up = 1.05
+        y_step = 0.1
 
         axes.set_xticks(np.round(np.arange(x_low, x_up, x_step), 2))
         axes.set_xticklabels(np.round(np.arange(x_low, x_up, x_step), 2))
@@ -989,10 +1295,6 @@ class PGM(RDSAnalysis):
             )
             for c in colors
         ]
-        style_handles = [
-            Line2D([0], [0], color="gray", lw=2.5, ls="-"),
-            Line2D([0], [0], color="gray", lw=2.5, ls="--"),
-        ]
 
         leg1 = axes.legend(
             stim_handles,
@@ -1004,15 +1306,6 @@ class PGM(RDSAnalysis):
             alignment="left",
         )
         axes.add_artist(leg1)
-        axes.legend(
-            style_handles,
-            ["Near", "Far"],
-            title="Disparity",
-            frameon=False,
-            loc="upper left",
-            bbox_to_anchor=(1.02, 0.55),
-            alignment="left",
-        )
 
         # Hide the right and top spines
         axes.spines["right"].set_visible(False)
@@ -1023,10 +1316,160 @@ class PGM(RDSAnalysis):
         axes.xaxis.set_ticks_position("bottom")
 
         if save_flag == 1:
-            if not os.path.exists(f"{self.save_dir}/Plots"):
-                os.mkdir(f"{self.save_dir}/Plots")
             fig.savefig(
-                f"{self.save_dir}/Plots/PlotLine_ref_weights_avg_seeds_{self.binocular_interaction}.pdf",
+                f"{self.pgm_plot_dir}/PlotLine_2afc_{self.binocular_interaction}_{self.seed}.pdf",
+                dpi=600,
+                bbox_inches="tight",
+            )
+
+    def plotLine_2afc_performance_seeds(self, save_flag: bool = True):
+        """
+        Plot 2-AFC performance averaged across all seed numbers for a given
+        binocular interaction
+
+        """
+
+        p_2afc_seeds = np.empty(
+            (
+                len(self.config.seed_to_analyse),
+                len(self.config.dotMatch_list),
+                len(self.config.dotDens_list),
+            ),
+            dtype=np.float32,
+        )
+
+        # load expected_disp_near and far all seeds
+        for s, seed in enumerate(self.config.seed_to_analyse):
+
+            # interaction = "sum_diff"
+            if self.binocular_interaction == "default":
+                epoch2load, iter2load = self.config.epoch_iter_to_load_default[s]
+            elif self.binocular_interaction == "bem":
+                epoch2load, iter2load = self.config.epoch_iter_to_load_bem[s]
+            elif self.binocular_interaction == "cmm":
+                epoch2load, iter2load = self.config.epoch_iter_to_load_cmm[s]
+            else:  # sum_diff
+                epoch2load, iter2load = self.config.epoch_iter_to_load_sum_diff[s]
+            # s = 0
+
+            path = Path(self.save_dir, f"experiment_{seed}", f"pgm_iter_{iter2load}")
+            p_2afc = np.load(f"{path}/p_2afc.npy")  # [dotMatch, dotDens]
+
+            # store to buffer
+            p_2afc_seeds[s] = p_2afc
+
+        # average across seeds, [dotMatch, dotDens]
+        p_2afc_mean = p_2afc_seeds.mean(axis=0)
+        p_2afc_sem = sem(p_2afc_seeds, axis=0)
+
+        # start plotting
+        stim_labels = ["aRDS", "hmRDS", "cRDS"]
+        markersize = 8
+
+        sns.set_theme(context="paper", style="ticks", font_scale=2, palette="deep")
+
+        figsize = (9, 6)
+        n_row = 1
+        n_col = 1
+
+        fig, axes = plt.subplots(
+            nrows=n_row, ncols=n_col, figsize=figsize, sharex=True, sharey=True
+        )
+
+        fig.text(
+            0.5,
+            1.0,
+            f"2-AFC performance (interaction: {self.binocular_interaction})",
+            ha="center",
+            fontweight="semibold",
+        )
+        fig.text(-0.05, 0.5, "Expected disp [px]", va="center", rotation=90)
+        fig.text(0.5, -0.04, "Dot density", ha="center")
+
+        fig.tight_layout()
+        plt.subplots_adjust(wspace=0.2, hspace=0.3)
+
+        ## plot E_near
+        colors = ["#6a5acd", "#00CED1", "#333333"]
+        x = np.array(self.dotDens_list)
+        for i in range(len(self.config.dotMatch_list)):
+            y = p_2afc_mean[i]
+            y_err = p_2afc_sem[i]
+
+            axes.plot(
+                x,
+                y,
+                lw=2,
+                c=colors[i],
+                ls="-",
+            )
+
+            # plot the marker
+            axes.plot(x, y, "o", markersize=markersize, c=colors[i])
+
+            axes.fill_between(
+                x, y - y_err, y + y_err, color=colors[i], alpha=0.2, lw=0, zorder=2
+            )
+
+        # plot chance level
+        axes.hlines(
+            y=0.5, xmin=0.0, xmax=1.0, colors="red", linestyles="--", linewidth=2
+        )
+
+        x_low = 0.0
+        x_up = 1.05
+        x_step = 0.1
+        y_low = 0.0
+        y_up = 1.05
+        y_step = 0.1
+
+        axes.set_xticks(np.round(np.arange(x_low, x_up, x_step), 2))
+        axes.set_xticklabels(np.round(np.arange(x_low, x_up, x_step), 2))
+        axes.set_yticks(np.round(np.arange(y_low, y_up, y_step), 2))
+        axes.set_yticklabels(np.round(np.arange(y_low, y_up, y_step), 2))
+
+        axes.set_xlim(x_low, x_up)
+        axes.set_ylim(y_low, y_up)
+
+        ## legend
+        # one legend explaining colour (stimulus) and one explaining line style
+        stim_handles = [
+            Line2D(
+                [0],
+                [0],
+                color=c,
+                lw=3,
+                marker="o",
+                markersize=markersize,
+                markeredgecolor="white",
+                markeredgewidth=1.5,
+            )
+            for c in colors
+        ]
+        leg1 = axes.legend(
+            stim_handles,
+            stim_labels,
+            title="Stimulus",
+            frameon=False,
+            loc="upper left",
+            bbox_to_anchor=(1.02, 1.0),
+            alignment="left",
+        )
+        axes.add_artist(leg1)
+
+        # Hide the right and top spines
+        axes.spines["right"].set_visible(False)
+        axes.spines["top"].set_visible(False)
+
+        # Only show ticks on the left and bottom spines
+        axes.yaxis.set_ticks_position("left")
+        axes.xaxis.set_ticks_position("bottom")
+
+        if save_flag == 1:
+            if not os.path.exists(f"{self.save_dir}/plots"):
+                os.mkdir(f"{self.save_dir}/plots")
+            fig.savefig(
+                f"{self.save_dir}/plots/PlotLine_2afc_avg_seeds_{self.binocular_interaction}.pdf",
                 dpi=600,
                 bbox_inches="tight",
             )
