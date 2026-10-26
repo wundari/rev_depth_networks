@@ -10,6 +10,7 @@ def main():
 
     # set up BNN model and RDS analysis
     config = ConfigBNN()
+    config.load_state = True
     rdsa = RDSAnalysis(config)
 
     # generate RDS dataloader

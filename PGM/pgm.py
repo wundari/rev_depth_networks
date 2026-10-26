@@ -1069,7 +1069,7 @@ class PGM(RDSAnalysis):
         fig.text(
             0.5,
             1.0,
-            f"Reference weight (interaction: {self.binocular_interaction})",
+            f"Reference weight ({self.model_name}, interaction: {self.binocular_interaction})",
             ha="center",
             fontweight="semibold",
         )
@@ -1228,7 +1228,7 @@ class PGM(RDSAnalysis):
         fig.text(
             0.5,
             1.0,
-            f"2-AFC performance (interaction: {self.binocular_interaction} / seed: {self.seed})",
+            f"2-AFC performance ({self.model_name}, interaction: {self.binocular_interaction} / seed: {self.seed})",
             ha="center",
             fontweight="semibold",
         )
@@ -1301,8 +1301,7 @@ class PGM(RDSAnalysis):
             stim_labels,
             title="Stimulus",
             frameon=False,
-            loc="upper left",
-            bbox_to_anchor=(1.02, 1.0),
+            loc="lower left",
             alignment="left",
         )
         axes.add_artist(leg1)
@@ -1379,7 +1378,7 @@ class PGM(RDSAnalysis):
         fig.text(
             0.5,
             1.0,
-            f"2-AFC performance (interaction: {self.binocular_interaction})",
+            f"2-AFC performance ({self.model_name}, interaction: {self.binocular_interaction})",
             ha="center",
             fontweight="semibold",
         )
@@ -1451,8 +1450,7 @@ class PGM(RDSAnalysis):
             stim_labels,
             title="Stimulus",
             frameon=False,
-            loc="upper left",
-            bbox_to_anchor=(1.02, 1.0),
+            loc="lower left",
             alignment="left",
         )
         axes.add_artist(leg1)

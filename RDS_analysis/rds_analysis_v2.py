@@ -27,7 +27,6 @@ from config.config_bnn import ConfigBNN
 from config.config_gcnet import ConfigGCNet
 from config.config_gcnet_left import ConfigGCNet
 from config.config_gcnet_lr import ConfigGCNet
-from config.config_gcnet_gn_lr import ConfigGCNet
 from utilities.misc import NestedTensor
 
 
@@ -176,8 +175,8 @@ class RDSAnalysis(EngineBase):
             config.target_disp
         )  # RDS target disparity (pix) to be analyzed
         self.disp_ct_pix_list = [
-            self.target_disp,
-            -self.target_disp,
+            self.target_disp,  # near
+            -self.target_disp,  # far
         ]  # disparity magnitude (near, far)
 
         # make dirs for saving the rds analysis
@@ -196,7 +195,7 @@ class RDSAnalysis(EngineBase):
             + "==============================================================\n"
             + f"DNN model used for RDS analysis: {self.config.model_pretrained}\n"
             + f"Batch size RDS: {self.batch_size_rds} \n"
-            + f"Disparity targets: [-{self.target_disp}, {self.target_disp}] pixels \n"
+            + f"Disparity targets: [Near: {self.target_disp}, Far: {-self.target_disp}] pixels \n"
             + f"Number of RDS for each disparity target: {self.n_rds_each_disp} \n"
             + f"Number of bootstrap for cross-decoding analysis: {self.n_bootstrap} \n"
             + f"RDS directory: {self.rds_dir}\n"
@@ -234,8 +233,6 @@ class RDSAnalysis(EngineBase):
         # elif self.model_name == "GC_Net_L":
         #     return build_gcnet(config)
         # elif self.model_name == "GC_Net_LR":
-        #     return build_gcnet(config)
-        # elif self.model_name == "GC_Net_GN_LR":
         #     return build_gcnet(config)
 
     def update_network_config(

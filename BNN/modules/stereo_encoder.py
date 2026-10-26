@@ -1,5 +1,6 @@
 # %% load necessary module
-from torch import nn, Tensor
+from torch import nn
+from utilities.misc import NestedTensor
 
 
 # %%
@@ -32,15 +33,17 @@ class FeatureExtractor(nn.Module):
             # nn.ReLU(inplace=True),
         )
 
-    def forward(self, x: Tensor):
+    def forward(self, x: NestedTensor):
 
         # concatenate left and right inputs along batch channel (dim=0)
         # out = torch.cat([x.left, x.right], dim=1)
 
         # out = self.in_conv(x)
-        out = self.layer2(self.in_conv(x))
+        # out = self.layer2(self.in_conv(x))
+        feat_left = self.layer2(self.in_conv(x.left))
+        feat_right = self.layer2(self.in_conv(x.right))
 
-        return out
+        return feat_left, feat_right
 
 
 def build_feat_extractor(config):

@@ -120,6 +120,8 @@ class GCNet(nn.Module):
         #     disp_pred = torch.sum(logits * self.disp_indices * -1, dim=1)
 
         logits = self.decoder(feat_left, feat_right, x.ref)
+
+        # regress disparity
         disp_pred = torch.sum(logits * self.disp_indices, dim=1)
 
         # logits = self.decoder(feat_right, feat_left)

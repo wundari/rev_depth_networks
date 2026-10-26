@@ -1,26 +1,30 @@
-# %%
-from config.config_bnn import ConfigBNN
-from GroupAnalysis.group_analysis_superposition import GA_Superposition
+def main():
+    from config.config_bnn import ConfigBNN
+    from GroupAnalysis.group_analysis_superposition import GA_Superposition
 
-# %%
-config = ConfigBNN()
-ga_sup = GA_Superposition(config)
+    # %%
+    config = ConfigBNN()
+    config.load_state = True
+    ga_sup = GA_Superposition(config)
 
-# %%
-# interactions = ["default", "bem", "cmm", "sum_diff"]
-conv_layer_names, _ = ga_sup.get_conv_names_and_weights()
-save_flag = True
-for interaction in ga_sup.interactions:
+    # %%
+    # interaction = ga_sup.interactions
+    interactions = ["default", "bem"]
+    conv_layer_names, _ = ga_sup.get_conv_names_and_weights()
+    save_flag = True
+    for interaction in interactions:
 
-    # feature dimensionality analysis
-    feat_dim_interaction = ga_sup.feature_dimensionality_interaction(interaction)
+        # feature dimensionality analysis
+        feat_dim_interaction = ga_sup.feature_dimensionality_interaction(interaction)
 
-    # plot violin feature dimensionality for a given interaction
-    ga_sup.plotViolin_feat_dim_interaction(
-        feat_dim_interaction, conv_layer_names, save_flag
-    )
+        # plot violin feature dimensionality for a given interaction
+        ga_sup.plotViolin_feat_dim_interaction(
+            feat_dim_interaction, conv_layer_names, save_flag
+        )
 
-# %% statistical test
-ga_sup.stat_feat_dim()
+    # %% statistical test
+    ga_sup.stat_feat_dim()
 
-# %%
+
+if __name__ == "__main__":
+    main()

@@ -61,19 +61,23 @@ class BNN(nn.Module):
     def forward(self, x: NestedTensor):
 
         # extract features
-        feat_left = self.encoder(x.left)
-        feat_right = self.encoder(x.right)
+        # feat_left = self.encoder(x.left)
+        # feat_right = self.encoder(x.right)
+        feat_left, feat_right = self.encoder(x)
 
         # concatenate left and right features
         # feat = torch.cat([feat_left, feat_right], dim=1)
         # feat = feat_left * feat_right
 
-        logits = self.decoder(feat_left, feat_right)
+        logits = self.decoder(feat_left, feat_right, x.ref)
 
         # regress disparity
-        out = torch.sum(logits * self.disp_indices * x.ref.view(-1, 1, 1, 1), dim=1)
+        # disp_pred = torch.sum(
+        #     logits * self.disp_indices * x.ref.view(-1, 1, 1, 1), dim=1
+        # )
+        disp_pred = torch.sum(logits * self.disp_indices, dim=1)
 
-        return out
+        return disp_pred
 
 
 def build_bnn(config) -> BNN:

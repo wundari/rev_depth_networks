@@ -7,6 +7,7 @@ def main():
 
     # set up DNN
     config = ConfigBNN()
+    config.load_state = False
     engine = EngineBNN(config)
 
     # prepare dataset
