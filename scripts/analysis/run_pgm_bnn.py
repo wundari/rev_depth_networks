@@ -16,14 +16,14 @@ def main():
 
     # create rds_bank
     # RDS bank structure: [dotMatch dotDens disp_magnitude n_rds_each_disp]
-    # rds_bank = pgm.create_rds_bank(pgm.background_flag, pgm.pedestal_flag)
+    rds_bank = pgm.create_rds_bank(pgm.background_flag, pgm.pedestal_flag)
 
     # pred_disp, pred_disp_labels = analysis.compute_disp_map_rds(rds_bank)
     # pred_disp: [dotMatch, dotDens, 2*n_rds_each_disp, h, w]
     # pred_disp_labels = [dotMatch, dotDens, 2*n_rds_each_disp]
 
-    interactions = pgm.config.interactions
-    # interactions = ["default", "bem"]
+    # interactions = pgm.config.interactions
+    interactions = ["sum_diff"]
     for interaction in interactions:
 
         for s, seed in enumerate(pgm.config.seed_to_analyse):
@@ -47,26 +47,26 @@ def main():
             pgm._load_pretrained_model()
             pgm.model.to(pgm.device)
 
-            # # compute activation stats for each eye reference
-            # ref_stats = pgm.compute_ref_stats(rds_bank)
-            # # path = Path(pgm.save_dir, f"experiment_{seed}", f"pgm_iter_{iter2load}")
-            # # ref_stats = np.load(f"{path}/ref_stats.npy", allow_pickle=True).item()
+            # compute activation stats for each eye reference
+            ref_stats = pgm.compute_ref_stats(rds_bank)
+            # path = Path(pgm.save_dir, f"experiment_{seed}", f"pgm_iter_{iter2load}")
+            # ref_stats = np.load(f"{path}/ref_stats.npy", allow_pickle=True).item()
 
-            # # plot predicted disparity variance
-            # pgm.plot_pred_disp_variance(ref_stats)
+            # plot predicted disparity variance
+            pgm.plot_pred_disp_variance(ref_stats)
 
-            # # compute reference weights
-            # w_ref = pgm.compute_reference_weight(ref_stats)
-            # pgm.plot_reference_weight(w_ref)
-            # # w_ref = np.load(f"{path}/reference_weight.npy")
+            # compute reference weights
+            w_ref = pgm.compute_reference_weight(ref_stats)
+            pgm.plot_reference_weight(w_ref)
+            # w_ref = np.load(f"{path}/reference_weight.npy")
 
-            # # compute expected disparity
-            # E_near, E_far = pgm.compute_expected_disp(ref_stats, w_ref)
-            # pgm.plot_expected_disp(E_near, E_far)
+            # compute expected disparity
+            E_near, E_far = pgm.compute_expected_disp(ref_stats, w_ref)
+            pgm.plot_expected_disp(E_near, E_far)
 
-            # # simulate 2-AFC
-            # p_2afc, p_2afc_std = pgm.simulate_2afc(ref_stats, w_ref)
-            # pgm.plotLine_2afc_performance(p_2afc, p_2afc_std)
+            # simulate 2-AFC
+            p_2afc, p_2afc_std = pgm.simulate_2afc(ref_stats, w_ref)
+            pgm.plotLine_2afc_performance(p_2afc, p_2afc_std)
 
         # plot average expected_disp across seeds
         pgm.plot_expected_disp_seeds()

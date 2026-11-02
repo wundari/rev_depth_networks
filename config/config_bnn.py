@@ -9,8 +9,8 @@ from dataclasses_json import dataclass_json
 class ConfigBNN(Config):
 
     model_name: str = "BNN"
-    binocular_interaction: str = "sum_diff"
-    seed: int = 27829
+    binocular_interaction: str = "default"
+    seed: int = 1618
 
     # Preserve physical eye identity throughout
     # the dataset/model pipeline.
@@ -31,8 +31,8 @@ class ConfigBNN(Config):
     if load_state:
         compile_mode = None
     experiment_id: int = seed  # experiment id for loading pretrained DNN
-    epoch_to_load = 7
-    iter_to_load = 13000
+    epoch_to_load = 9
+    iter_to_load = 17500
     model_pretrained: str = (
         f"epoch_{epoch_to_load}_iter_{iter_to_load}_model_best.pth.tar"  # pretrained file name, e.g: epoch_1_model.pth.tar
     )
@@ -86,7 +86,7 @@ class ConfigBNN(Config):
             (8, 15500),  # seed 35154
             (9, 17500),  # seed 35744
             (9, 16000),  # seed 36675
-            (7, 17000),  # seed 43798
+            (9, 17000),  # seed 43798
             (9, 16500),  # seed 55826
             (9, 17589),  # seed 59035
             (8, 15000),  # seed 65190
@@ -101,9 +101,9 @@ class ConfigBNN(Config):
             (9, 17500),  # seed 1618
             (7, 13500),  # seed 11364
             (9, 17589),  # seed 16476
-            (7, 12500),  # seed 27829
+            (9, 17500),  # seed 27829
             (8, 15500),  # seed 35154
-            (9, 16500),  # seed 35744
+            (9, 17000),  # seed 35744
             (9, 16000),  # seed 36675
             (8, 15500),  # seed 43798
             (8, 15000),  # seed 55826

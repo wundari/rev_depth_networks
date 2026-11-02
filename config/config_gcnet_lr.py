@@ -8,7 +8,7 @@ from dataclasses_json import dataclass_json
 class ConfigGCNet(Config):
 
     model_name: str = "GC_Net_LR"
-    binocular_interaction: str = "sum_diff"
+    binocular_interaction: str = "bem"
     seed: int = 1618
 
     # Preserve physical eye identity throughout

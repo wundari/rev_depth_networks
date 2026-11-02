@@ -2,16 +2,17 @@
 
 from GroupAnalysis.group_analysis_learning_curve import GA_LearningCurve
 from config.config_bnn import ConfigBNN
-from config.config_gcnet import ConfigGCNet
+from config.config_gcnet_lr import ConfigGCNet
 
 # %% load config and create GA_LearningCurve object
-config = ConfigBNN()
-# config = ConfigGCNet()
+# config = ConfigBNN()
+config = ConfigGCNet()
 ga = GA_LearningCurve(config)
 
 # %%
+interactions = ga.interactions
 # interactions = ["default", "bem", "cmm", "sum_diff"]
-for interaction in ga.interactions:
+for interaction in interactions:
     # interaction = "bem"
     ga.update_bino_interaction(interaction)
     train_losses = ga.get_train_loss()

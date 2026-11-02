@@ -7,9 +7,8 @@ def main():
     config.load_state = True
     ga_sup = GA_Superposition(config)
 
-    # %%
-    # interaction = ga_sup.interactions
-    interactions = ["default", "bem"]
+    interactions = ga_sup.interactions
+    # interactions = ["default", "bem"]
     conv_layer_names, _ = ga_sup.get_conv_names_and_weights()
     save_flag = True
     for interaction in interactions:

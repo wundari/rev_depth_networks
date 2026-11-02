@@ -6,7 +6,7 @@ from statsmodels.stats.multitest import multipletests
 from itertools import combinations
 
 from config.config_bnn import ConfigBNN
-from config.config_gcnet import ConfigGCNet
+from config.config_gcnet_lr import ConfigGCNet
 
 import seaborn as sns
 import matplotlib.pyplot as plt
@@ -356,7 +356,7 @@ class GA_LearningCurve:
             y_low = 10
             y_up = 71
             y_step = 10
-        elif self.model_name == "GC_Net":
+        elif self.model_name == "GC_Net_LR":
             y_low = 0
             y_up = 31
             y_step = 5
@@ -499,7 +499,7 @@ class GA_LearningCurve:
             y_low = 10
             y_up = 61
             y_step = 10
-        elif self.model_name == "GC_Net":
+        elif self.model_name == "GC_Net_LR":
             y_low = 0
             y_up = 31
             y_step = 5
@@ -632,7 +632,7 @@ class GA_LearningCurve:
             y_low = 10
             y_up = 61
             y_step = 10
-        elif self.model_name == "GC_Net":
+        elif self.model_name == "GC_Net_LR":
             y_low = 0
             y_up = 31
             y_step = 5
@@ -737,7 +737,7 @@ class GA_LearningCurve:
             y_low = 0.0
             y_up = 0.71
             y_step = 0.1
-        elif self.model_name == "GC_Net":
+        elif self.model_name == "GC_Net_LR":
             y_low = 0.0
             y_up = 1.01
             y_step = 0.2
@@ -870,7 +870,7 @@ class GA_LearningCurve:
             y_low = 0.0
             y_up = 0.71
             y_step = 0.1
-        elif self.model_name == "GC_Net":
+        elif self.model_name == "GC_Net_LR":
             y_low = 0.0
             y_up = 1.01
             y_step = 0.2
@@ -1003,7 +1003,7 @@ class GA_LearningCurve:
             y_low = 0.0
             y_up = 0.71
             y_step = 0.1
-        elif self.model_name == "GC_Net":
+        elif self.model_name == "GC_Net_LR":
             y_low = 0.0
             y_up = 1.01
             y_step = 0.2
