@@ -9,7 +9,7 @@ from dataclasses_json import dataclass_json
 class ConfigBNN(Config):
 
     model_name: str = "BNN"
-    binocular_interaction: str = "default"
+    binocular_interaction: str = "bem"
     seed: int = 1618
 
     # Preserve physical eye identity throughout
@@ -31,8 +31,8 @@ class ConfigBNN(Config):
     if load_state:
         compile_mode = None
     experiment_id: int = seed  # experiment id for loading pretrained DNN
-    epoch_to_load = 9
-    iter_to_load = 17500
+    epoch_to_load = 7
+    iter_to_load = 12500
     model_pretrained: str = (
         f"epoch_{epoch_to_load}_iter_{iter_to_load}_model_best.pth.tar"  # pretrained file name, e.g: epoch_1_model.pth.tar
     )

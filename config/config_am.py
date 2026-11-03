@@ -16,10 +16,10 @@ class ConfigAM:
     # here use [3, 96, 96] for visibility. [256, 512] will make the resulting RF structure
     # too small to see
     size_multiple: int = 2  # H,W must be multiples of this (BNN 2; GC_Net_LR 32)
-    restarts: int = 10  # the number of independent optimization runs (in parallel)
+    restarts: int = 4  # the number of independent optimization runs (in parallel)
     # with different random initializations performed for each target neuron.
 
-    iterations: int = 500
+    iterations: int = 1000
     lr: float = 0.01  # (bnn: 0.01)
     color_mode: str = "rgb"  # rgb or gray
 
@@ -29,7 +29,7 @@ class ConfigAM:
         True  # # removes rainbow speckle; False = original behaviour
     )
     lowpass: float | None = (
-        0.25  # soft cutoff in cycles/px, e.g. 0.25; None = off (bnn: 0.5)
+        None  # soft cutoff in cycles/px, e.g. 0.25; None = off (bnn: 0.5)
     )
     eye_init: str = (
         "independent"  # "shared": eyes start as shifted copies(bnn: independent)
@@ -43,12 +43,12 @@ class ConfigAM:
     # grid patterns, checkerboard artifacts (common in transposed convolution/up-sampling),
     # and sharp pixel noise.
 
-    init_std: float = 0.1  # 0.05
+    init_std: float = 0.05
     sign: int = 1  # -1 minimizes the raw activation / cost
 
     l2: float = 0.1  # 0.0, optional penalty around raw gray .5 (bnn: 0.05)
-    # L_2 regularization (weight decay or ridge penalty) constrains extreme feature
-    # activation sizes or pixel intensities.Effect: Raising lambda_L_2 helps
+    # L2 regularization (weight decay or ridge penalty) constrains extreme feature
+    # activation sizes or pixel intensities. Effect: Raising lambda_L_2 helps
     # prevent high-frequency "checkerboard" artifacts or
     # exploding pixel values caused by unrestrained optimization.
 
@@ -68,7 +68,7 @@ class ConfigAM:
         None  # alternative: disparity in input pixels (needs max_disp)
     )
     max_disp: int | None = None  # config.max_disp; needed for disp_px / reporting
-    window: int = 5  # controls the spatial neighborhood size (W X W) extracted and
+    window: int = 3  # controls the spatial neighborhood size (W X W) extracted and
     # averaged from the target feature map to form the optimization objective.
     # must be odd number.
     # For example: 1 is one neuron; 3 is a region mean of 3x3 window (avg of 9 neurons)
@@ -87,9 +87,9 @@ class ConfigAM:
 
     # --- performance
     batch_size: int = (
-        32  # | None = None  # jobs (channel x restart) per pass; None = auto
+        64  # | None = None  # jobs (channel x restart) per pass; None = auto
     )
-    # fast_path: bool = True  # exact local evaluation of decoder.layer3.0
+    fast_path: bool = True  # exact local evaluation of decoder.layer3.0
     store_restart_images: bool = False
     store_gradient: bool = False
 

@@ -1,17 +1,22 @@
 # %%
+import os
+
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+import warnings
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
-import os
-import warnings
-import numpy as np
-
 from contextlib import contextmanager
 from dataclasses import asdict, replace
-from jaxtyping import Float
+from jaxtyping import Float, Int
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from pathlib import Path
 
 from utilities.misc import NestedTensor
 
@@ -21,7 +26,10 @@ from config.config_bnn import ConfigBNN
 from config.config_gcnet_lr import ConfigGCNet
 from config.config_am import ConfigAM
 
-torch.backends.cudnn.benchmark = False
+torch.backends.cudnn.benchmark = (
+    False  # setting cudnn.benchmark=True, can speed things up a lot,
+)
+# but it makes the results slightly non-reproducible.
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.allow_tf32 = (
     False  # analysis in true fp32 (training used bf16 AMP)
@@ -163,7 +171,9 @@ class StereoFFTParam(nn.Module):
             spec[:, o] = torch.view_as_real(shifted)
         self.spec = nn.Parameter(spec)
 
-        freq = (fx.square() + fy.square()).sqrt().clamp_min(1 / max(h, w))  # [h, w // 2 + 1]
+        freq = (
+            (fx.square() + fy.square()).sqrt().clamp_min(1 / max(h, w))
+        )  # [h, w // 2 + 1]
         scale = freq.pow(-decay)
 
         # lowpass, cutoff freq above "lowpass"
@@ -300,11 +310,13 @@ def image_penalty(
     dims = (1, 2, 3, 4)  # Reduce over eye, channel, height, width
     pen = image.new_zeros(image.shape[0])  # [B]
 
-    if config.l2: # L2 penalty
+    if config.l2:  # L2 penalty
         pen = pen + config.l2 * (image - 0.5).square().mean(dims)
-        # pen = pen + config.l2 * (image - 0.5).abs().mean(dims)
 
-    if config.tv: # total variation penalty
+    # L1 penalty
+    # pen = pen + config.l2 * (image - 0.5).abs().mean(dims)
+
+    if config.tv:  # total variation penalty
         pen = pen + config.tv * (
             (image[..., 1:, :] - image[..., :-1, :]).square().mean(dims)
             + (image[..., :, 1:] - image[..., :, :-1]).square().mean(dims)
@@ -398,13 +410,15 @@ def center_slice(
         raise ValueError("window must be odd and positive")
 
     if feat_map.ndim not in (4, 5):
-        raise ValueError(f"Expected [N, C, H, W] or [N, C, D, H, W], got {tuple(feat_map.shape)}")
+        raise ValueError(
+            f"Expected [N, C, H, W] or [N, C, D, H, W], got {tuple(feat_map.shape)}"
+        )
     y0, x0 = center_origin(*feat_map.shape[-2:], window)
 
-    if feat_map.ndim == 5: # if feat_map contains disparity channel
+    if feat_map.ndim == 5:  # if feat_map contains disparity channel
         feat_map = feat_map[:, :, disp_index]
 
-    elif disp_index is not None: # if feat_map does not have disparity channel
+    elif disp_index is not None:  # if feat_map does not have disparity channel
         raise ValueError("a disparity index is only meaningful for a 5D target")
 
     return feat_map[..., y0 : y0 + window, x0 : x0 + window].mean((-2, -1))
@@ -501,16 +515,18 @@ class CenterTarget(nn.Module):
         """
         Runs model forward up to target layer, returning target channel activations.
 
-        Shapes:
+        Args:
             image:      [B, 2, C, H, W]
             channels:   [B] (long tensor of target channel indices per batch item)
-            Output:     [B] (scalar activation per batch item)
+
+        Output:     [B] (scalar activation per batch item)
         """
 
         _check_pair(image)
-        
+
         found = []
         count = 0
+
         def hook(module, inputs, out):
             nonlocal count
             current = count
@@ -538,7 +554,9 @@ class CenterTarget(nn.Module):
                 f"Target call {self.call_index} was not reached (observed {count} calls)"
             )
 
-        feat_map = found[0]  # [B, C_out, H_feat, W_feat] or [B, C_out, D, H_feat, W_feat]
+        feat_map = found[
+            0
+        ]  # [B, C_out, H_feat, W_feat] or [B, C_out, D, H_feat, W_feat]
         self.output_shape = (1,) + tuple(feat_map.shape[1:])
 
         if feat_map.ndim == 5:
@@ -555,7 +573,8 @@ class CenterTarget(nn.Module):
 
         # Gather target channel per batch item: [B, 1] -> [B]
         return value.gather(1, channels.view(-1, 1)).squeeze(1)
-    
+
+
 # %% exact local ("fast") evaluation of the 3D decoder
 #
 # The target value depends on a small box of every earlier tensor.  We (1) propagate
@@ -570,9 +589,12 @@ AUTO_BATCH_BYTES = (
     6e9  # activation memory budget used to pick the batch size (heuristic)
 )
 
-# GC_Net_LR StereoDecoder.forward: node -> input(s).  "V0" is the cost volume,
-# ("add", a, b) a residual sum (no ReLU after it); every other entry is a
-# conv(+BatchNorm3d+ReLU) block ending in the ReLU output.
+# This is the manually specified decoder wiring. V0 denotes build_costVol output.
+# 19->20 is a shallow branch; V0->21->24->27->30 is the downsampling backbone with
+# additional within-level convolutions. 33a..36a upsample and merge skip tensors.
+# The synthetic nodes 33b,34b,35b,36b are additions, not named PyTorch modules.
+# The wiring matches the inspected current GC_Net_LR decoder, including residual
+# sums WITHOUT an extra ReLU after the sum.
 _GC_INPUT = {
     "19": "V0",
     "20": "19",
@@ -602,17 +624,23 @@ _GC_INPUT = {
 
 class _Node:
     """
-        Encapsulates the metadata and operator references for a single node in the decoder DAG.
-        Nodes map directly to PyTorch modules, making it possible to traverse the graph and
-        extract corresponding layer weights and biases.
+    A record holding a node's name, kind, parent names and references to the actual
+    trained conv/BN/ReLU modules. It does not copy weights or perform computation.
+    kind='cost' is the volume source; kind='add' is a synthetic sum; kind='block' is
+    a convolutional block. The statement that all nodes map directly to PyTorch
+    modules is imprecise: cost and functional residual-add nodes are synthetic.
     """
-    def __init__(self, name: str,
-                 kind,
-                 inputs=(),
-                 conv: nn.Conv3d | nn.ConvTranspose3d | None=None,
-                 bn: nn.BatchNorm3d | None=None,
-                 relu: nn.ReLU | None=None,
-                 seq: nn.Sequential | None=None):
+
+    def __init__(
+        self,
+        name: str,
+        kind,
+        inputs=(),
+        conv: nn.Conv3d | nn.ConvTranspose3d | None = None,
+        bn: nn.BatchNorm3d | None = None,
+        relu: nn.ReLU | None = None,
+        seq: nn.Sequential | None = None,
+    ):
         # name: Node identifier string (e.g., "21", "33b")
         # kind: "cost" (source volume), "add" (residual elementwise sum), or "block" (conv/norm/activation module).
         # inputs: Tuple of input node name strings
@@ -626,13 +654,14 @@ class _Node:
 
 class DecoderGraph:
     """
-        Manages topological traversal and maps PyTorch module object IDs (`id(module)`) 
-        back to graph nodes. Used to extract the computational DAG of GC-Net's 3D decoder.
+    Manages topological traversal and maps PyTorch module object IDs (`id(module)`)
+    back to graph nodes. Used to extract the computational DAG of GC-Net's 3D decoder.
     """
+
     def __init__(self, nodes: _Node):
-        
+
         self.nodes = nodes
-        
+
         # Map module IDs to their corresponding node name and stage.
         # This allows fast identification of target layers during activation maximization.
         self._lookup = {}
@@ -662,7 +691,7 @@ class DecoderGraph:
     def order(self, target):
         """
         Ancestors of `target` (inclusive), inputs before consumers.
-        Executes Depth-First Search (DFS) to return a topologically sorted list of ancestor nodes 
+        Executes Depth-First Search (DFS) to return a topologically sorted list of ancestor nodes
         (inputs before consumers) required to evaluate `target`.
         """
         seen, out = set(), []
@@ -682,11 +711,11 @@ class DecoderGraph:
 
 def _supported_conv(conv):
     """
-        Verifies that a convolution operator adheres strictly to the kernel size, stride, 
-        padding, and dilation assumptions used by the coordinate math in the receptive 
-        field calculation.
+    Verifies that a convolution operator adheres strictly to the kernel size, stride,
+    padding, and dilation assumptions used by the coordinate math in the receptive
+    field calculation.
     """
-    
+
     k3 = (3, 3, 3)
     if isinstance(conv, nn.Conv3d):
         return (
@@ -711,24 +740,24 @@ def _supported_conv(conv):
 
 def build_decoder_graph(decoder):
     """
-        Inspects `dec` (`model.decoder`). Verifies the presence of all GC-Net layers 
-        (`layer19` to `layer37`), checks structural validity (`nn.Sequential` containing 
-        Conv3d -> BatchNorm3d -> ReLU), and returns a validated `DecoderGraph`. 
-        Returns `None` if the decoder does not match the GC-Net specification.
+    Inspects `decoder` (`model.decoder`). Verifies the presence of all GC-Net layers
+    (`layer19` to `layer37`), checks structural validity (`nn.Sequential` containing
+    Conv3d -> BatchNorm3d -> ReLU), and returns a validated `DecoderGraph`.
+    Returns `None` if the decoder does not match the GC-Net specification.
     """
-    
+
     blocks = [n for n, v in _GC_INPUT.items() if not isinstance(v, tuple)]
     if not all(hasattr(decoder, f"layer{n}") for n in blocks):
         return None
-    
+
     nodes = {"V0": _Node("V0", "cost")}
     for n, src in _GC_INPUT.items():
-        
+
         if isinstance(src, tuple):
             nodes[n] = _Node(n, "add", src[1:])
             continue
         m = getattr(decoder, f"layer{n}")
-        
+
         if isinstance(m, nn.Sequential):
             mods = list(m)
             kinds = [type(x) for x in mods]
@@ -742,27 +771,28 @@ def build_decoder_graph(decoder):
             bn = mods[1] if len(mods) == 3 else None
             relu = mods[2] if len(mods) == 3 else None
             seq = m
-        
+
         else:
             conv, bn, relu, seq = m, None, None, None
-        
+
         if not _supported_conv(conv):
             return None
         nodes[n] = _Node(n, "block", (src,), conv, bn, relu, seq)
-    
+
     return DecoderGraph(nodes)
 
 
 from collections import namedtuple
+
 FastSpec = namedtuple("FastSpec", "graph target stage")
 
 
 def resolve_fast_target(model, layer):
     """
-        Resolves an arbitrary network module into a validated `FastSpec(graph, target_node, stage)` 
-        if local evaluation is possible, or `None` if the layer must use the generic fallback.
+    Resolves an arbitrary network module into a validated `FastSpec(graph, target_node, stage)`
+    if local evaluation is possible, or `None` if the layer must use the generic fallback.
     """
-    
+
     decoder = getattr(model, "decoder", None)
     if (
         decoder is None
@@ -771,7 +801,7 @@ def resolve_fast_target(model, layer):
         or not hasattr(decoder, "max_disp")
     ):
         return None
-    
+
     # 1. Checks if model.decoder matches GC-Net.
     graph = build_decoder_graph(decoder)
     if graph is not None:  # GC_Net_LR: any conv / BN / ReLU / block of layers 19..37
@@ -780,7 +810,7 @@ def resolve_fast_target(model, layer):
         if hit is None:
             return None
         target, stage = hit
-        
+
         # Check all ancestor nodes for un-tracked BatchNorm statistics (running_mean is None).
         # If valid, returns FastSpec.
         bad = [
@@ -795,8 +825,8 @@ def resolve_fast_target(model, layer):
             )
             return None
         return FastSpec(graph, target, stage)
-    
-    # 2. If not GC-Net (e.g., BNN): checks if layer is a 3D convolution directly consuming 
+
+    # 2. If not GC-Net (e.g., BNN): checks if layer is a 3D convolution directly consuming
     # the cost volume via consumes_cost_volume(model, layer).
     if (
         isinstance(layer, nn.Conv3d)
@@ -806,7 +836,7 @@ def resolve_fast_target(model, layer):
         # If verified, returns a minimal 2-node graph V0 -> T.
         nodes = {"V0": _Node("V0", "cost"), "T": _Node("T", "block", ("V0",), layer)}
         return FastSpec(DecoderGraph(nodes), "T", "conv")
-    
+
     # 3. Otherwise, returns None.
     return None
 
@@ -816,53 +846,55 @@ def _conv_out_len(conv: nn.Conv3d | nn.ConvTranspose3d, n: int):
         Computes the output 1D spatial/depth dimension given input length n.
         For nn.Conv3d: L_out = (n - 1) // s + 1
         For nn.ConvTranspose3d (s=2, p=1, k=3, op=1): L_out = 2n
-    
+
     Dimensions:
         n (int): Scalar integer
         Output (int): Scalar integer L_out
     """
     if isinstance(conv, nn.ConvTranspose3d):
         return (n - 1) * 2 - 2 + 3 + 1  # = 2n for k3 s2 p1 output_padding 1
-    
+
     return (n + 2 - 3) // conv.stride[0] + 1
 
 
 def _in_range(conv: nn.Conv3d | nn.ConvTranspose3d, lo: int, hi: int):
     """
         Computes the input index interval [a, b) required to compute output interval [lo, hi).
-        
+
         For nn.Conv3d: Output voxel o reads input voxels i in [s*o - 1, s*o + 1].
             Lower bound: a = s * lo - 1
             Upper bound (exclusive): b = s * (hi - 1) + 2
         For nn.ConvTranspose3d: Output voxel o is generated by inputs i satisfying o = 2i - 1 + k'.
             Lower bound: a = floor(lo / 2)
             Upper bound (exclusive): b = floor(hi / 2) + 1
-            
+
     Inputs/Outputs:
         lo, hi (int): integers
         Outputs (Tuple[int, int]): a, b integers (may produce negative indices or values exceeding tensor bounds, handled by _fetch).
     """
-    
+
     if isinstance(conv, nn.ConvTranspose3d):  # o = 2i - 1 + k, k in 0..2
         return lo // 2, hi // 2 + 1
     s = conv.stride[0]  # o reads inputs s*o-1 .. s*o+1
-    
+
     return s * lo - 1, s * (hi - 1) + 2
 
 
 def _fetch(x, xbox, req, size):
     """
-        Extracts the required bounding box `req` from cached tensor `x` (which covers sub-region `xbox`), 
-        zero-padding wherever `req` extends beyond the absolute physical tensor boundaries `[0, size)`.
-        
+    Extracts the required bounding box `req` from cached tensor `x` (which covers sub-region `xbox`),
+    zero-padding wherever `req` extends beyond the absolute physical tensor boundaries `[0, size)`.
+
     Variables & Dimensions:
-        x (Tensor): Sub-volume tensor of shape [B, C, d_hi - d_lo, y_hi - y_lo, x_hi - x_lo], where (d_hi - d_lo) is xbox[0][1] - xbox[0][0].
+        x (Tensor): Sub-volume tensor of shape [B, C, d_hi - d_lo, y_hi - y_lo, x_hi - x_lo],
+            where (d_hi - d_lo) is xbox[0][1] - xbox[0][0].
         xbox (Tuple): Currently computed region [(d_lo, d_hi), (y_lo, y_hi), (x_lo, x_hi)].
         req (Tuple): Target requested region [(rd_lo, rd_hi), (ry_lo, ry_hi), (rx_lo, rx_hi)].
         size (Tuple): Global tensor dimensions (D_total, H_total, W_total).
-        Output (Tensor): Tensor of shape [B, C, rd_hi - rd_lo, ry_hi - ry_lo, rx_hi - rx_lo] with zero padding applied to out-of-bounds boundaries.
+        Output (Tensor): Tensor of shape [B, C, rd_hi - rd_lo, ry_hi - ry_lo, rx_hi - rx_lo]
+            with zero padding applied to out-of-bounds boundaries.
     """
-    
+
     sl, pad = [], []
     for (lo, hi), (blo, bhi), n in zip(req, xbox, size):
         clo, chi = max(lo, 0), min(hi, n)
@@ -871,72 +903,79 @@ def _fetch(x, xbox, req, size):
         sl.append(slice(clo - blo, chi - blo))
         pad.append((clo - lo, hi - chi))
     x = x[:, :, sl[0], sl[1], sl[2]]
-    
+
     if any(v for pp in pad for v in pp):
         x = F.pad(x, (pad[2][0], pad[2][1], pad[1][0], pad[1][1], pad[0][0], pad[0][1]))
-    
+
     return x
 
 
 def _crop_to(x, xbox, obox):
     """
-        Performs a relative internal spatial crop from a computed tensor region `xbox` down to sub-region `obox` 
-        for residual skip additions (A + B).
-        
+        Performs a relative internal spatial crop from a computed tensor region `xbox`
+        down to sub-region `obox` for residual skip additions (A + B).
+
     Dimensions:
         x (Tensor): [B, C, d_hi - d_lo, y_hi - y_lo, x_hi - x_lo] corresponding to `xbox`.
-        Output (Tensor): [B, C, d_hi' - d_lo', y_hi' - y_lo', x_hi' - x_lo'] corresponding to `obox` where slices are offset by (olo - blo, ohi - blo).
+        Output (Tensor): [B, C, d_hi' - d_lo', y_hi' - y_lo', x_hi' - x_lo']
+            corresponding to `obox` where slices are offset by (olo - blo, ohi - blo).
     """
-    
+
     sl = [slice(olo - blo, ohi - blo) for (olo, ohi), (blo, _) in zip(obox, xbox)]
-    
+
     return x[:, :, sl[0], sl[1], sl[2]]
 
 
-def _bn3d(y, bn, ch=None):
+def _bn3d(
+    y: Float[Tensor, "B C D H W"],
+    bn: nn.BatchNorm3d,
+    ch: Int[Tensor, "B"] | None = None,
+):
     """
-        Exact local application of `nn.BatchNorm3d` in evaluation mode using frozen running statistics.
-        Fuses running statistics and affine parameters into a scale vector and shift vector.
-        If `ch` is provided (targeting a single channel per job), it slices the scale and shift vectors 
-        to avoid broadcasting unneeded channels.
-        
+    Exact local application of `nn.BatchNorm3d` in evaluation mode using frozen running statistics.
+    Fuses running statistics and affine parameters into a scale vector and shift vector.
+    If `ch` is provided (targeting a single channel per job), it slices the scale and shift vectors
+    to avoid broadcasting unneeded channels.
+
     Variables & Dimensions:
         y (Tensor): [B, C, D, H, W] or [B, 1, D, H, W]
         bn (nn.BatchNorm3d): BatchNorm3d layer with fixed statistics.
         ch (Tensor): Integer tensor [B] of channel targets, or None.
-        scale, shift: Broadcasted as [1, C, 1, 1, 1] if ch is None, or [-1, 1, 1, 1, 1] (which will be viewed to match) if ch is specified.
+        scale, shift: Broadcasted as [1, C, 1, 1, 1] if ch is None, or [-1, 1, 1, 1, 1]
+            (which will be viewed to match) if ch is specified.
         Output (Tensor): y scaled and shifted.
     """
-    
+
     rm, rv = bn.running_mean, bn.running_var
     gamma = bn.weight if bn.weight is not None else torch.ones_like(rm)
     beta = bn.bias if bn.bias is not None else torch.zeros_like(rm)
     scale = gamma * torch.rsqrt(rv + bn.eps)
     shift = beta - rm * scale
-    
+
     if ch is None:
         shape = (1, -1, 1, 1, 1)
     else:
         scale, shift, shape = scale[ch], shift[ch], (-1, 1, 1, 1, 1)
-    
+
     return y * scale.view(shape) + shift.view(shape)
 
 
 class FastDecoderConvTarget(nn.Module):
     """
     Exact, local evaluation of a 3D decoder layer.
-        Activation maximization is inherently spatially localized. Because 3D convolutions have small,
-        localized receptive fields, a single output voxel does not depend on the entire cost volume.
-        Instead, its dependency traces backward through the network as a narrow spatial-depth cone.
 
-        This module operates in three stages:
-        1. Static Graph & Bounding Box Propagation (_plan): Back-propagates a discrete 3D bounding box
-            from the target layer to the cost volume V0.
-        2. Minimal Volume Slicing (forward): Synthesizes only the micro-patch of V0 falling inside 
-            the required box.
-        3. Local Forward Evaluation (_block): Computes each intermediate 3D block strictly on its sub-volume
-            with exact zero padding at true tensor boundaries. For the final target layer, it evaluates only the
-            target channel via grouped 3D convolutions, achieving a massive reduction in memory and compute.
+    Activation maximization is inherently spatially localized. Because 3D convolutions have small,
+    localized receptive fields, a single output voxel does not depend on the entire cost volume.
+    Instead, its dependency traces backward through the network as a narrow spatial-depth cone.
+
+    This module operates in three stages:
+    1. Static Graph & Bounding Box Propagation (_plan): Back-propagates a discrete 3D bounding box
+        from the target layer to the cost volume V0.
+    2. Minimal Volume Slicing (forward): Synthesizes only the micro-patch of V0 falling inside
+        the required box.
+    3. Local Forward Evaluation (_block): Computes each intermediate 3D block strictly on its sub-volume
+        with exact zero padding at true tensor boundaries. For the final target layer, it evaluates only the
+        target channel via grouped 3D convolutions, achieving a massive reduction in memory and compute.
 
     BNN: a Conv3d that reads the cost volume (`decoder.layer3.0`).
     GC_Net_LR: the conv, BatchNorm3d, ReLU or whole block of any of layers 19..37
@@ -960,7 +999,7 @@ class FastDecoderConvTarget(nn.Module):
         window: int = 1,
         default_batch: int = 32,
     ):
-        
+
         super().__init__()
         self.model = model
         object.__setattr__(self, "spec", spec)
@@ -1006,11 +1045,19 @@ class FastDecoderConvTarget(nn.Module):
         pad = (d, D - d)
 
         # Shifted right and left features
-        feat_right_shifted = F.pad(feat_right, pad)[..., D // 2 : D // 2 + w]  # [B, C, H, W]
-        feat_left_shifted = F.pad(feat_left, pad)[..., D // 2 : D // 2 + w]  # [B, C, H, W]
+        feat_right_shifted = F.pad(feat_right, pad)[
+            ..., D // 2 : D // 2 + w
+        ]  # [B, C, H, W]
+        feat_left_shifted = F.pad(feat_left, pad)[
+            ..., D // 2 : D // 2 + w
+        ]  # [B, C, H, W]
         left_is_reference = (ref == 1).view(-1, 1, 1, 1)  # [B, 1, 1, 1]
-        left = torch.where(left_is_reference, feat_left, feat_left_shifted) # [B, C, H, W]
-        right = torch.where(left_is_reference, feat_right_shifted, feat_right) # [B, C, H, W]
+        left = torch.where(
+            left_is_reference, feat_left, feat_left_shifted
+        )  # [B, C, H, W]
+        right = torch.where(
+            left_is_reference, feat_right_shifted, feat_right
+        )  # [B, C, H, W]
 
         binocular_interaction = decoder.binocular_interaction
         if binocular_interaction == "default":
@@ -1027,7 +1074,7 @@ class FastDecoderConvTarget(nn.Module):
 
         # Concatenated interaction channels: [B, 2*C, H, W]
         return torch.cat(chans, dim=1)
-    
+
     def _plan(self, D: int, h: int, w: int):
         """
             Backward Receptive Field Planning.
@@ -1040,28 +1087,28 @@ class FastDecoderConvTarget(nn.Module):
             h, w (int): Spatial dimensions of 2D encoder feature maps
             Output (Dict): Dictionary containing execution order, shapes, bounding boxes, target disparity, etc.
         """
-        
+
         key = (D, h, w)
         if key in self._plans:
             return self._plans[key]
-        graph = self.spec.graph, 
+        graph = self.spec.graph
         target = self.spec.target
         order = graph.order(target)
-        
-        shapes, chans = {}, {}
+
         # 1. Compute the tensor dimensions of each node forward through the DAG.
+        shapes, chans = {}, {}
         for n in order:
             nd = graph.nodes[n]
-            
+
             if nd.kind == "cost":
                 shapes[n] = (D, h, w)
-            
+
             elif nd.kind == "add":
                 shapes[n] = shapes[nd.inputs[0]]
                 chans[n] = chans[nd.inputs[0]]
                 if shapes[nd.inputs[1]] != shapes[n]:
                     raise ValueError(f"residual inputs of {n} differ in shape")
-            
+
             else:
                 shapes[n] = tuple(
                     _conv_out_len(nd.conv, L) for L in shapes[nd.inputs[0]]
@@ -1134,9 +1181,10 @@ class FastDecoderConvTarget(nn.Module):
             ),
         )
         self._plans[key] = plan
+
         return plan
 
-    def _block(self, nd: _Node, x, xbox, xsize, ob, ch):
+    def _block(self, nd: _Node, x: Float[Tensor, "B c d h w"], xbox, xsize, ob, ch):
         """
             Evaluates a single block node in the DAG forward pass.
             Calls `_fetch` to retrieve the input patch, applying padding to out-of-bounds voxels.
@@ -1153,9 +1201,11 @@ class FastDecoderConvTarget(nn.Module):
             ch (Tensor): Channel indices if target layer, None if intermediate.
             Output (Tensor): Evaluated sub-volume tensor for `ob`.
         """
+
         conv = nd.conv
         convT = isinstance(conv, nn.ConvTranspose3d)
         req = [_in_range(conv, lo, hi) for lo, hi in ob]
+
         x = _fetch(x, xbox, req, xsize)
         if ch is None:  # all channels
             if convT:
@@ -1165,9 +1215,11 @@ class FastDecoderConvTarget(nn.Module):
                     y = y + conv.bias.view(1, -1, 1, 1, 1)
             else:
                 y = F.conv3d(x, conv.weight, conv.bias, stride=conv.stride)
+
         else:  # one filter per job
             B, cin = x.shape[:2]
             xg = x.reshape(1, B * cin, *x.shape[2:])  # [1, B * C_in, D, H, W]
+
             if convT:
                 wsel = (
                     conv.weight[:, ch]
@@ -1179,21 +1231,26 @@ class FastDecoderConvTarget(nn.Module):
             else:
                 y = F.conv3d(xg, conv.weight[ch], None, stride=conv.stride, groups=B)
             y = y.transpose(0, 1)  # [B, 1, 1, window, window]
+
             if conv.bias is not None:
                 y = y + conv.bias[ch].view(-1, 1, 1, 1, 1)
+
         stage = self.spec.stage if ch is not None else "relu"
         if stage == "conv":
             return y
+
         if nd.bn is not None:
             y = _bn3d(y, nd.bn, ch)
+
         if stage == "bn" or nd.relu is None:
             return y
+
         return F.relu(y)
 
     @staticmethod
     def _crop_convT(y, req, ob):
         """
-            Crops the output of an unpadded transposed convolution back to the required target box.
+        Crops the output of an unpadded transposed convolution back to the required target box.
         """
         # unpadded transposed conv of the crop: q = o - 2*i_lo + 1
         sl = [
@@ -1207,7 +1264,6 @@ class FastDecoderConvTarget(nn.Module):
         image: Float[Tensor, "B 2 C H W"],
         channels: Float[Tensor, "B"],
     ) -> Float[Tensor, "B"]:
-        
         """
         Execution lifecycle of local evaluation.
             1. Input Normalization & 2D Encoder: Processes left and right inputs on the full spatial canvas.
@@ -1226,49 +1282,49 @@ class FastDecoderConvTarget(nn.Module):
 
         decoder = self.model.decoder
         B = image.shape[0]
-        stride = self.conv.stride[0]
-        
         graph = self.spec.graph
         spec = self.spec
 
-        # 1. Run 2D encoder on full image        
+        # 1. Run 2D encoder on full image
         left, right = _split_normalize(image, self.normalizer)  # [B, C, H, W] each
         ref = image.new_full((B,), float(self.ref))  # [B]
         feat_left, feat_right = self.model.encoder(
             NestedTensor(left=left, right=right, ref=ref)
         )  # [B, C_feat, H_feat, W_feat] each
         _, _, h, w = feat_left.shape
-        
+
         # 2. Retrieve Receptive Field Plan
         plan = self._plan(decoder.max_disp // 2, h, w)
         shapes = plan["shapes"]
         box = plan["box"]
-        
+
         # 3 & 4. Cost Volume Construction and Forward Execution
         val = {}
         for n in plan["order"]:
             nd = graph.nodes[n]
             ob = box[n]
-            
+
             if nd.kind == "cost":
                 (d0, d1), (y0, y1), (x0, x1) = ob
                 feat_left_row = feat_left[:, :, y0:y1]
                 feat_right_row = feat_right[:, :, y0:y1]
-                
+
                 # Synthesizes micro-patch of the raw 5D cost volume
                 # val["V0"] shape: [B, 2C_enc, d1 - d0, y1 - y0, x1 - x0]
                 val[n] = torch.stack(
                     [
-                        self._slice(decoder, feat_left_row, feat_right_row, ref, dd)[..., x0:x1]
+                        self._slice(decoder, feat_left_row, feat_right_row, ref, dd)[
+                            ..., x0:x1
+                        ]
                         for dd in range(d0, d1)
                     ],
                     dim=2,
                 )
-            
+
             elif nd.kind == "add":
                 a, b = nd.inputs
                 val[n] = _crop_to(val[a], box[a], ob) + _crop_to(val[b], box[b], ob)
-            
+
             else:
                 src = nd.inputs[0]
                 val[n] = self._block(
@@ -1279,7 +1335,7 @@ class FastDecoderConvTarget(nn.Module):
                     ob,
                     channels if n == spec.target else None,
                 )
-                
+
         # 5. Output Extraction
         out = val[spec.target]  # [B, 1, 1, window, window]
         conv = graph.nodes[spec.target].conv
@@ -1401,8 +1457,8 @@ def make_target(
         max_disp=config.max_disp,
         window=config.window,
     )
-    dec = getattr(model, "decoder", None)
-    fast_ok = (config.fast_path and call_index == 0)
+
+    fast_ok = config.fast_path and call_index == 0
     if fast_ok:
         spec = resolve_fast_target(model, layer)
         if spec is not None:
@@ -1412,7 +1468,7 @@ def make_target(
     in_encoder = hasattr(model, "encoder") and any(
         m is layer for m in model.encoder.modules()
     )
-    
+
     return CenterTarget(
         model, layer, call_index=call_index, default_batch=32 if in_encoder else 1, **kw
     )
@@ -1525,6 +1581,9 @@ class ActivationMaximization:
         # set up target layers
         self.set_target_layers()
 
+        # print out the complete list of candidate layers
+        self.print_candidate_layers()
+
         # print out list of target layers
         self.print_target_layers()
 
@@ -1568,7 +1627,10 @@ class ActivationMaximization:
             os.makedirs(self.experiment_dir)
 
         # activation_maximization directory
-        self.am_dir = os.path.join(self.experiment_dir, "activation_maximization")
+        self.am_dir = os.path.join(
+            self.experiment_dir,
+            f"activation_maximization_iter_{self.config.iter_to_load}",
+        )
         if not os.path.exists(self.am_dir):
             os.makedirs(self.am_dir)
 
@@ -1577,7 +1639,7 @@ class ActivationMaximization:
         for name, module in self.model.named_modules():
             if isinstance(module, kinds):
                 print(
-                    f"{name:24} {type(module).__name__:24} channels={module.out_channels}"
+                    f"{name:24} {type(module).__name__:24} out_channels={module.out_channels}"
                 )
 
     def set_target_layers(self):
@@ -1624,13 +1686,13 @@ class ActivationMaximization:
                 # disparity sweep:
                 # *[dict(name=f"decoder_layer3_pre_d{d:+d}", module="decoder.layer3.0", call=0,
                 #        channels=None, disp_px=d, sign=1) for d in (-20, -10, 0, 10, 20)],
-                dict(
-                    name="decoder_layer3_post_relu",
-                    module="decoder.layer3",
-                    call=0,
-                    channels=list(range(32)),
-                    disp_px=0,
-                ),
+                # dict(
+                #     name="decoder_layer3_post_relu",
+                #     module="decoder.layer3",
+                #     call=0,
+                #     channels=list(range(32)),
+                #     disp_px=0,
+                # ),
                 # Final layer: one channel; model uses softmax(-cost), so sign=-1 (min cost) = preferred.
                 dict(
                     name="decoder_layer4_cost",
@@ -1641,54 +1703,135 @@ class ActivationMaximization:
                 ),
             ]
         else:  # gcnet variants
-            # layer19.0 (stride 1, 2 px resolution) and layer21.0 (stride 2, 4 px resolution)
-            # read the cost volume directly -> exact fast path.  Everything deeper is generic
-            # (full decoder forward/backward; heavy, auto batch size is 1 there).
-            # NOTE (binocular_interaction="default"): the PRE-activation layers 19.0 / 21.0 are
-            # linear in [left, right] features, so the eye-ablation interaction there is exactly
-            # 0 by construction.  Look at post-ReLU / deeper layers (or "bem") for interaction.
-            self.target_layers = [
-                *[dict(
-                    name=f"decoder_layer{i}_pre_relu",
-                    module=f"decoder.layer{i}.0",
-                    call=0,
-                    channels=None,
-                    disp_px=0,
-                ) for i in range(19, 33)],
-                
-                dict(name)
-                
-                # disparity sweep:
-                # *[dict(name=f"decoder_layer19_pre_d{d:+d}", module="decoder.layer19.0", call=0,
-                #        channels=None, disp_px=d, sign=1) for d in (-20, -10, 0, 10, 20)],
-                # encoder (weights shared between the eyes; call 0 = left, call 1 = right):
-                # dict(name="left_layer1_pre", module="encoder.layer1.0", call=0, channels=None, sign=1),
-                # dict(name="right_layer1_pre", module="encoder.layer1.0", call=1, channels=None, sign=1),
-                # dict(name="left_res0_conv1", module="encoder.res_block.0.conv2d_block1.0", call=0, channels=None, sign=1),
-                # post-BN3d+ReLU (composite module -> list channels explicitly; generic path, heavy):
-                # dict(
-                #     name="decoder_layer19_post",
-                #     module="decoder.layer19",
-                #     call=0,
-                #     channels=list(range(config.base_channels)),
-                #     disp_px=0,
-                # ),
-                # Final layer: model uses softmax(-cost), so sign=-1 (min cost) = preferred.
-                dict(
-                    name="decoder_layer37_cost",
-                    module="decoder.layer37",
-                    call=0,
-                    channels=[0],
-                    disp_px=0,
-                ),
-            ]
+            # GC_Net_LR decoder layers 19..37.  All of them use the exact local fast path
+            # (FastDecoderConvTarget); a layer is evaluated only on the part of the volume it
+            # depends on, so the cost is tiny for layers 19-31 and ~2x cheaper than the generic
+            # path for 32-37, whose receptive field covers the whole disparity range.
+            #
+            # GC_STAGE picks what is maximised (your choice changes the science):
+            #   "pre"  conv output before BatchNorm3d/ReLU  (decoder.layerN.0)
+            #   "bn"   after BatchNorm3d                    (decoder.layerN.1)
+            #   "post" after BatchNorm3d + ReLU             (decoder.layerN)
+
+            # NOTE (binocular_interaction="default"): PRE-activation layers 19.0 / 21.0 are linear
+            # in [left, right] features, so their eye-ablation interaction is exactly 0.  Use
+            # "post" (or "bem") to see interaction.  Layer 37 has no BatchNorm/ReLU (always conv).
+
+            GC_STAGE = "pre"
+            GC_LAYERS = [
+                "19",
+                "20",
+                "21",
+                "22",
+                "23",
+                "24",
+                "25",
+                "26",
+                "27",
+                "28",
+                "29",
+                "30",
+                "31",
+                "32",
+                "33a",
+                "34a",
+                "35a",
+                "36a",
+                "37",
+            ]  # edit to run a subset
+
+            # window is in the layer's OWN pixels; one pixel covers 2 (layers 19/20/36a) up to 32
+            # (layers 30-32) input px, so deeper layers need smaller windows (a 5x5 window at
+            # layer 30 would span 5 of its 8 rows).  Roughly constant input extent:
+            # GC_WINDOW = {
+            #     "19": 5,
+            #     "20": 5,
+            #     "36a": 5,
+            #     "37": 5,
+            #     "21": 3,
+            #     "22": 3,
+            #     "23": 3,
+            #     "35a": 3,
+            # }
+            # disp_px resolution (px per depth index): 19/20/36a 2; 21-23/35a 4; 24-26/34a 8;
+            # 27-29/33a 16; 30-32 32; 37 1.  disp_px is rounded to the nearest index.
+            self.target_layers = []
+            for n in GC_LAYERS:
+                if n == "37":
+                    self.target_layers.append(
+                        dict(
+                            # model uses softmax(-cost), so sign=-1 (min cost) = preferred
+                            name="decoder_layer37_cost",
+                            module="decoder.layer37",
+                            call=0,
+                            channels=[0],
+                            disp_px=0,
+                            # window=GC_WINDOW.get(n),
+                        )
+                    )
+                    continue
+
+                suffix = {"pre": ".0", "bn": ".1", "post": ""}[GC_STAGE]
+                self.target_layers.append(
+                    dict(
+                        name=f"decoder_layer{n}_{GC_STAGE}",
+                        module=f"decoder.layer{n}{suffix}",
+                        call=0,
+                        channels=None,
+                        disp_px=0,
+                        # window=GC_WINDOW.get(n, 1),
+                    )
+                )
+
+            # disparity sweep of one layer, e.g.:
+            # LAYER_TARGETS = [dict(name=f"decoder_layer19_pre_d{d:+d}", module="decoder.layer19.0",
+            #                       call=0, channels=None, disp_px=d, sign=1, window=5)
+            #                  for d in (-20, -10, 0, 10, 20)]
+            # encoder (weights shared between the eyes; call 0 = left, call 1 = right):
+            # LAYER_TARGETS += [
+            #     dict(name="left_layer1_pre", module="encoder.layer1.0", call=0, channels=None, sign=1),
+            #     dict(name="right_layer1_pre", module="encoder.layer1.0", call=1, channels=None, sign=1),
+            # ]
+
+    def print_candidate_layers(self):
+
+        print("==============================================================")
+        print(
+            f"List of candidate layers in {self.model_name}-{self.config.binocular_interaction}"
+        )
+        print("==============================================================")
+        self._list_candidate_layers()
+        print("==============================================================\n")
+
+        # decoder.layer19.0        Conv3d                   out_channels=32
+        # decoder.layer20.0        Conv3d                   out_channels=32
+        # decoder.layer21.0        Conv3d                   out_channels=64
+        # decoder.layer22.0        Conv3d                   out_channels=64
+        # decoder.layer23.0        Conv3d                   out_channels=64
+        # decoder.layer24.0        Conv3d                   out_channels=64
+        # decoder.layer25.0        Conv3d                   out_channels=64
+        # decoder.layer26.0        Conv3d                   out_channels=64
+        # decoder.layer27.0        Conv3d                   out_channels=64
+        # decoder.layer28.0        Conv3d                   out_channels=64
+        # decoder.layer29.0        Conv3d                   out_channels=64
+        # decoder.layer30.0        Conv3d                   out_channels=128
+        # decoder.layer31.0        Conv3d                   out_channels=128
+        # decoder.layer32.0        Conv3d                   out_channels=128
+        # decoder.layer33a.0       ConvTranspose3d          out_channels=64
+        # decoder.layer34a.0       ConvTranspose3d          out_channels=64
+        # decoder.layer35a.0       ConvTranspose3d          out_channels=64
+        # decoder.layer36a.0       ConvTranspose3d          out_channels=32
+        # decoder.layer37          ConvTranspose3d          out_channels=1
 
     def print_target_layers(self):
 
         print("==============================================================")
-        print(f"List of target layers in {self.model_name}")
+        print(
+            f"List of target layers in {self.model_name}-{self.config.binocular_interaction}"
+        )
         print("==============================================================")
-        self._list_candidate_layers()
+        for layer in self.target_layers:
+            print(layer["name"])
         print("==============================================================\n")
 
     def print_am_params(self):
@@ -1701,8 +1844,13 @@ class ActivationMaximization:
         print(f"The number of iterations: {self.config_am.iterations}")
         print(f"Learning rate: {self.config_am.lr}")
         print(f"Parameterization [fft or pixel]: {self.config_am.parameterization}")
+        print(
+            f"Lowpass freq for Fourier spectrum of synthesized images: {self.config_am.lowpass}"
+        )
         print(f"Color mode [rgb or gray]: {self.config_am.color_mode}")
         print(f"Decay rate: {self.config_am.decay}")
+        print(f"L2 penalty: {self.config_am.l2}")
+        print(f"Total variation (TV) penalty: {self.config_am.tv}")
         print(f"Physical eye reference [1: left, -1: right]{self.config_am.ref}")
         print(f"Spatial neighborhood size [odd number]: {self.config_am.window}")
         print(
@@ -1713,7 +1861,6 @@ class ActivationMaximization:
     def optimize_batch(
         self,
         target: Union[CenterTarget, FastDecoderConvTarget],
-        config_am: ConfigAM,
         channels: Sequence[int],
         seeds: Sequence[int],
         device: torch.device,
@@ -1741,6 +1888,7 @@ class ActivationMaximization:
 
         B = len(channels)
         ch = torch.tensor(channels, device=device, dtype=torch.long)
+        config_am = self.config_am
         c, h, w = config_am.input_size
 
         if config_am.parameterization == "fft":
@@ -1779,18 +1927,29 @@ class ActivationMaximization:
             img=None,  # [B, 2, C, H, W]
         )
 
-        def record(step: int, image: Tensor, act: Tensor):
-            # The UNtransformed pair is what we report, so only it selects the best step.
+        def record(step: int, image: Tensor, act_raw: Tensor):
+            """
+
+            Args:
+                step (int): _description_
+                image (Tensor): "un-jittered" syntehsized image
+                act_raw (Tensor): activation in response to "un-jittered" synthesized image
+
+            Raises:
+                FloatingPointError: _description_
+            """
+            # The UNtransformed pair ("un-jittered" stereo images) is what we report,
+            # so only it selects the best step.
             # image: [B, 2, C, H, W]
             # act:   [B]
             # score: [B]
 
-            score = config_am.sign * act - image_penalty(image, config_am)
+            score = config_am.sign * act_raw - image_penalty(image, config_am)
             if not torch.isfinite(score).all():
                 raise FloatingPointError("Non-finite activation/objective")
 
             steps.append(step)
-            acts.append(act)
+            acts.append(act_raw)
             scores.append(score)
 
             if best["img"] is None:
@@ -1798,7 +1957,7 @@ class ActivationMaximization:
             better = score > best["score"]
             best["img"] = torch.where(better.view(-1, 1, 1, 1, 1), image, best["img"])
             best["score"] = torch.where(better, score, best["score"])
-            best["act"] = torch.where(better, act, best["act"])
+            best["act"] = torch.where(better, act_raw, best["act"])
             best["step"] = torch.where(
                 better, torch.full_like(best["step"], step), best["step"]
             )
@@ -1824,18 +1983,21 @@ class ActivationMaximization:
             )  # [B, 2, C, H, W]
 
             # compute the activation of neuron/group of neurons in channels
-            act = target(x, ch)  # [B]
+            # in response to the jittered synthesized image
+            act_jittered = target(x, ch)  # [B]
 
             if evaluate and identity:  # no transform: reuse this forward pass
-                record(step, image.detach(), act.detach())
+                record(step, image.detach(), act_jittered.detach())
 
             # clear gradient
             opt.zero_grad(set_to_none=True)
 
-            # compute the objective function
+            # compute the score of the objective function
             # d loss / d params = -sign * (d x/d params)^T d act/d x, via plain autograd
-            (-config_am.sign * act + image_penalty(image, config_am)).sum().backward()
-            train.append(act.detach())
+            (
+                -config_am.sign * act_jittered + image_penalty(image, config_am)
+            ).sum().backward()
+            train.append(act_jittered.detach())
 
             # update the generator (image synthesizer) parameters
             opt.step()
@@ -1893,13 +2055,14 @@ class ActivationMaximization:
         Args:
             images:      [U, 2, C, H, W] (optimized stereo pairs on CPU for U channels)
             channels:    Sequence[int] of length U
-            Output:
-                values:      [4, U] on CPU
-                            Row 0: both eyes driven
-                            Row 1: left eye driven only
-                            Row 2: right eye driven only
-                            Row 3: baseline gray
-                interaction: [U] on CPU - Binocular synergy metric
+
+        Output:
+            values: [4, U] on CPU
+                    Row 0: both eyes driven
+                    Row 1: left eye driven only
+                    Row 2: right eye driven only
+                    Row 3: baseline gray
+            interaction_strength: [U] on CPU - Binocular synergy metric
 
         NOTE: for post-BatchNorm3d targets the blank eye also
         changes the volume-wide statistics, which confounds the interaction term.
@@ -1923,14 +2086,26 @@ class ActivationMaximization:
 
         values = torch.cat(out, dim=1)  # [4, U]
         both, left_only, right_only, blank = values  # Each: [U]
-        interaction = both - left_only - right_only + blank  # [U]
+        interaction_strength = both - left_only - right_only + blank  # [U]
 
-        return values, interaction
+        return values, interaction_strength
 
     @torch.no_grad()
-    def disparity_profile(self, generic_target, images, W, chunk, device):
+    def disparity_profile(
+        self,
+        generic_target: CenterTarget,
+        images: Float[Tensor, "U 2 C H W"],
+        W: Float[Tensor, "U D ..."],
+        chunk: int,
+        device: torch.device,
+    ) -> Float[Tensor, "U D"]:
         """
-        Objective of the FIXED optimised pair at every disparity index: [U, D].
+        Evaluates the activation profile of a fixed optimized stereo pair across ALL
+            candidate disparity indices D in the cost volume to assess stereo tuning breadth.
+
+        Args:
+            images: [U, 2, C, H, W] on CPU
+            Output: [U, D] on CPU
         """
         out = []
         for a in range(0, len(images), chunk):
@@ -1939,15 +2114,24 @@ class ActivationMaximization:
                     images[a : a + chunk].to(device), W[a : a + chunk].to(device)
                 ).cpu()
             )
+
         return torch.cat(out)
 
-    def interocular_xcorr(self, img, max_shift):
+    def interocular_xcorr(
+        self, img: Float[Tensor, "2 C H W"], max_shift: int
+    ) -> Tuple[Tensor, Tensor]:
         """
-        Normalised circular cross-correlation of the optimised pair along x.
-        c(s) = mean_x L(x) R(x+s) / (std_L std_R): a peak at s>0 means a feature at x in the left
-        image sits at x+s in the right image.  Property of the STIMULUS, independent of the net.
-        img [2,C,H,W] -> (shifts [2S+1], corr [2S+1]).
+        Computes the normalized 1D circular cross-correlation between left and right images
+            along horizontal scanlines: c(s) = mean_x L(x) R(x+s) / (std_L * std_R).
+            Reveals the dominant spatial disparity embedded directly in the synthesized stimulus.
+
+        Args:
+            img:       [2, C, H, W]
+            Output:
+                shifts:  [2 * S + 1] - Integer disparity offsets from -S to +S
+                corr:    [2 * S + 1] - Normalized cross-correlation values
         """
+
         L = img[0] - img[0].mean((-2, -1), keepdim=True)
         R = img[1] - img[1].mean((-2, -1), keepdim=True)
         w = L.shape[-1]
@@ -1956,24 +2140,49 @@ class ActivationMaximization:
             torch.fft.rfft(L, dim=-1).conj() * torch.fft.rfft(R, dim=-1), n=w, dim=-1
         ).mean((0, 1))
         cc = cc / (w * L.std() * R.std() + 1e-8)
+
         return torch.arange(-S, S + 1), torch.cat([cc[w - S :], cc[: S + 1]])
 
-    def input_gradient(self, target, x, channels):
+    def input_gradient(
+        self,
+        target: Union[CenterTarget, FastDecoderConvTarget],
+        x: Float[Tensor, "B 2 C H W"],
+        channels: Float[Tensor, "B"],
+    ) -> Tuple[Float[Tensor, "B 2 C H W"], Float[Tensor, "B"]]:
         """
-        True raw-pixel gradient of each job's activation: [B, 2, C, H, W], activation [B].
+        Computes the true pixel-space Jacobian gradient (d activation / d input_pixels)
+            for each job in the batch. Measures the local sensitivity of the neuron to each pixel.
+
+        Args:
+            x:        [B, 2, C, H, W]
+            channels: [B]
+
+        Outputs:
+            g:      [B, 2, C, H, W] - Pixel-wise gradient map
+            act:    [B]             - Activation scalar per batch item
         """
         with torch.enable_grad():
             x = x.detach().requires_grad_(True)
             act = target(x, channels)
             (g,) = torch.autograd.grad(act.sum(), x)
+
         return g.detach(), act.detach()
 
-    def mass_bbox(self, energy, mass=0.95):
+    def mass_bbox(
+        self, energy: Float[Tensor, "H W"], mass: float = 0.95
+    ) -> Optional[Tuple[int, int, int, int]]:
         """
-        Independent eye rectangle with >= requested fraction of squared gradient.
-        Returns (y0, y1, x0, x1), exclusive upper bounds.
-        None means zero sensitivity.
-        Bounding marginal tails at (1-mass)/4 gives a union-bound guarantee.
+        Identifies the tightest 2D bounding box [y0, y1, x0, x1] containing >= mass (e.g., 95%)
+            of the neuron's spatial sensitivity energy.
+            Treats the 2D energy map as a probability density. Because image-wide normalization
+            gives every pixel a tiny nonzero gradient, thresholding fails. By trimming the
+            marginal tails at q = (1 - mass)/4 on both axes, Boole's inequality (union bound)
+            guarantees the box captures at least `mass` fraction of the total sensitivity.
+
+        Args:
+            energy: [H, W] - 2D squared gradient energy map for one eye
+
+        Output: (y0, y1, x0, x1) integer coordinates, or None if zero energy
         """
 
         energy = energy.detach().double().cpu()
@@ -2002,33 +2211,39 @@ class ActivationMaximization:
 
         y0, y1 = extent(energy.sum(1))
         x0, x1 = extent(energy.sum(0))
+
         return y0, y1, x0, x1
 
     def empirical_rf(
         self,
-        target,
-        images,
-        channels,
-        n_samples,
-        mass,
-        seeds,
-        chunk,
-        device,
-        keep_gradient=False,
-    ):
+        target: Union[CenterTarget, FastDecoderConvTarget],
+        images: Float[Tensor, "U 2 C H W"],
+        channels: Sequence[int],
+        n_samples: int,
+        mass: float,
+        seeds: Sequence[int],
+        chunk: int,
+        device: torch.device,
+        keep_gradient: bool = False,
+    ) -> List[Dict[str, Any]]:
         """
-        locates where and how widely each eye influences the neuron in physical pixel space,
-        revealing its empirical receptive field (RF).
+        Measures the empirical receptive field (RF) and spatial sensitivity bounds for each eye.
+            A single gradient map on the optimized image can suffer from local saturation (e.g., flat ReLUs).
+            This function averages the squared gradient energy across the optimized image PLUS
+            `n_samples` independent random Gaussian noise probes.
+            Each probe's energy map is normalized to sum to 1 before accumulation, preventing any
+            single probe from dominating. `mass_bbox` is then applied to extract the bounding box.
 
-        Per-neuron, per-eye squared TRUE gradient (mean over colour), averaged over the
-        optimised image + n_samples noise probes.
+        Args:
+            images:        [U, 2, C, H, W] on CPU
+            channels:      Sequence[int] of length U
 
-        Each probe map is normalised to unit total energy first, so no single probe dominates;
-        probes with zero gradient (inactive unit) are skipped.
-
-        A sampled sensitivity map, not a structural RF.
-        Because BatchNorm statistics are image-wide, every pixel has a tiny nonzero
-        gradient; the mass box therefore measures where the sensitivity concentrates.
+        Output:
+            results: List of U dictionaries containing:
+                    - 'rf_map':            [2, H, W] on CPU (normalized sensitivity map per eye)
+                    - 'rf_boxes':          List of 2 tuples [(y0,y1,x0,x1), ...] per eye
+                    - 'rf_captured_mass':  List of 2 floats (exact energy fraction inside box)
+                    - 'gradient':          [2, C, H, W] on CPU (gradient on optimized image, optional)
         """
 
         results = []
@@ -2090,11 +2305,36 @@ class ActivationMaximization:
     def maximize_layer(
         self,
         layer: nn.Module,
-        channels,
-        normalizer=None,
-        call_index=0,
-        layer_name="",
-    ):
+        channels: Sequence[int],
+        normalizer: Optional[RGBNormalize] | None = None,
+        call_index: int = 0,
+        layer_name: str = "",
+        device: torch.device | None = None,
+    ) -> Dict[str, Any]:
+        """
+        Executes the full activation maximization pipeline for a given layer and set of channels:
+            1. Initializes batched stimulus parameters across all requested channels and random restarts.
+            2. Freezes network with instance-norm adaptation (analysis_mode).
+            3. Runs Adam optimization with optional Redirected ReLU.
+            4. Identifies best restart per channel based on untransformed evaluation score.
+            5. Executes eye ablation to classify monocular vs binocular synergy.
+            6. Maps empirical receptive fields and 95% mass bounding boxes per eye.
+
+        Args:
+            channels: Sequence of U unique channel integers to probe.
+
+        Returns dictionary containing:
+                - 'channels':      List[int] of length U
+                - 'settings':      Dict of AM configuration
+                - 'layer_name':    str
+                - 'call_index':    int
+                - 'units':         List of U dictionaries (all individual neuron data)
+                - 'img':           [U, 2, C=3, H, W] - Best stimuli for all units
+                - 'act':           [U] - Best activations
+                - 'trace':         [n_eval, U] - Activation evaluation traces
+                - 'trace_steps':   [n_eval] - Step numbers
+                - 'abl':           [4, U] - Ablation values (both, left, right, blank)
+        """
 
         # validating parameters for activation optimization
         self.config_am.validate()
@@ -2102,8 +2342,6 @@ class ActivationMaximization:
         channels = list(channels)
         if not channels or len(set(channels)) != len(channels):
             raise ValueError("channels must be nonempty and unique")
-
-        device = self.config.device
 
         if next(self.model.parameters()).device != device:
             raise ValueError("Move model to device before maximizing")
@@ -2116,6 +2354,8 @@ class ActivationMaximization:
                 self.model, layer, self.config_am, normalizer, call_index
             )
             bs = self.config_am.batch_size or target.default_batch
+            if hasattr(target, "summary"):
+                print(f"{layer_name}: {target.summary}; batch size {bs}", flush=True)
             jobs = [(ch, r) for ch in channels for r in range(self.config_am.restarts)]
             runs = {ch: [] for ch in channels}
 
@@ -2133,7 +2373,7 @@ class ActivationMaximization:
                     chunk = jobs[a : a + bs]
                     seeds = [self.config_am.seed + ch * 100003 + r for ch, r in chunk]
                     out = self.optimize_batch(
-                        target, self.config_am, [ch for ch, _ in chunk], seeds, device
+                        target, [ch for ch, _ in chunk], seeds, device
                     )
                     for (ch, _), run in zip(chunk, out):
                         runs[ch].append(run)
@@ -2143,14 +2383,21 @@ class ActivationMaximization:
                         flush=True,
                     )
 
+            # Select best restart per channel: best_idx dict mapping ch -> int (0 to restarts-1)
             best_idx = {
                 ch: max(range(len(runs[ch])), key=lambda r: runs[ch][r]["score"])
                 for ch in channels
             }
+
+            # Stack best images: [U, 2, C=3, H, W] on CPU
             images = torch.stack([runs[ch][best_idx[ch]]["img"] for ch in channels])
-            abl, interaction = self.eye_ablation(
+
+            # abl: [4, U], interaction_strength: [U]
+            abl, interaction_strength = self.eye_ablation(
                 target, images, channels, self.config_am.baseline, bs, device
             )
+
+            # rfs: List of U dicts with RF maps [2, H, W] and bounding boxes
             rfs = self.empirical_rf(
                 target,
                 images,
@@ -2188,42 +2435,56 @@ class ActivationMaximization:
                     "a pre-activation target or redirected_relu=True)"
                 )
 
-            a_u = abl[:, u]
+            a_u = abl[:, u]  # [4] - (both, left, right, blank)
             unit = dict(
                 channel=ch,
-                img=best["img"],
-                act=best["act"],
-                score=best["score"],
-                best_restart=bi,
-                best_step=best["step"],
-                trace=best["trace"],
-                trace_steps=best["trace_steps"],
-                score_trace=best["score_trace"],
-                abl=a_u,
-                interaction=interaction[u],
-                baseline_relative=a_u[:3] - a_u[3],
-                output_shape=shape,
-                disp_index=d_index,
+                img=best["img"],  # [2, C=3, H, W]
+                act=best["act"],  # float
+                score=best["score"],  # float
+                best_restart=bi,  # int
+                best_step=best["step"],  # int
+                trace=best["trace"],  # [n_eval]
+                trace_steps=best["trace_steps"],  # [n_eval]
+                score_trace=best["score_trace"],  # [n_eval]
+                abl=a_u,  # [4]
+                interaction_strength=interaction_strength[u],  # float
+                baseline_relative=a_u[:3] - a_u[3],  # [3]
+                output_shape=shape,  # Tuple (e.g. (1, C, D, H, W))
+                disp_index=d_index,  # int or None
                 # An eye with exactly zero gradient is not driven (e.g. the other eye of
                 # a shared monocular encoder call): its pixels are just the random init.
-                driven=[b is not None for b in rfs[u]["rf_boxes"]],
-                implied_disparity_px=implied_disp,
-                restart_traces=torch.stack([r["trace"] for r in rs]),
-                train_traces=torch.stack([r["train_trace"] for r in rs]),
-                restart_scores=torch.stack([r["score_trace"] for r in rs]),
-                restart_best_scores=[r["score"] for r in rs],
-                restart_best_steps=[r["step"] for r in rs],
-                restart_seeds=[r["seed"] for r in rs],
-                **rfs[u],
+                driven=[
+                    b is not None for b in rfs[u]["rf_boxes"]
+                ],  # [bool, bool] (left, right)
+                implied_disparity_px=implied_disp,  # float or None
+                restart_traces=torch.stack(
+                    [r["trace"] for r in rs]
+                ),  # [restarts, n_eval]
+                train_traces=torch.stack(
+                    [r["train_trace"] for r in rs]
+                ),  # [restarts, iterations]
+                restart_scores=torch.stack(
+                    [r["score_trace"] for r in rs]
+                ),  # [restarts, n_eval]
+                restart_best_scores=[r["score"] for r in rs],  # List[float]
+                restart_best_steps=[r["step"] for r in rs],  # List[int]
+                restart_seeds=[r["seed"] for r in rs],  # List[int]
+                **rfs[
+                    u
+                ],  # 'rf_map' [2, H, W], 'rf_boxes', 'rf_captured_mass', 'gradient'
             )
+
             if self.config_am.store_restart_images:
+                # [restarts, 2, C=3, H, W]
                 unit["restart_best_images"] = torch.stack([r["img"] for r in rs])
             units.append(unit)
+
             print(
                 f"{layer_name} call={call_index}, channel={ch}: activation="
                 f'{best["act"]:.5g}, restart={bi}, step={best["step"]}',
                 flush=True,
             )
+
         return dict(
             channels=channels,
             config_am=asdict(self.config_am),
@@ -2235,6 +2496,7 @@ class ActivationMaximization:
             trace=torch.stack([u["trace"] for u in units], dim=1),
             trace_steps=units[0]["trace_steps"],
             abl=torch.stack([u["abl"] for u in units], dim=1),
+            interaction_strength=interaction_strength,
             normalization=(
                 None
                 if normalizer is None
@@ -2262,7 +2524,6 @@ class ActivationMaximization:
         self,
         layer: nn.Module,
         normalizer: RGBNormalize,
-        config: ConfigAM,
         device: torch.device,
         n=2,
         channels=None,
@@ -2277,7 +2538,7 @@ class ActivationMaximization:
         4. optional: Captum NeuronGradient == autograd.
         Relative errors above `tol` are flagged FAIL.
         """
-        c, h, w = config.input_size
+        c, h, w = self.config_am.input_size
         n_out = getattr(layer, "out_channels", 1)
         ch_list = (
             list(channels) if channels is not None else [i % n_out for i in range(n)]
@@ -2287,7 +2548,7 @@ class ActivationMaximization:
         x = torch.rand(n, 2, c, h, w, generator=g).to(device)
         ch = torch.tensor(ch_list, device=device)
         rep = {}
-        ref = x.new_full((1,), float(config.ref))
+        ref = x.new_full((1,), float(self.config_am.ref))
 
         def rel(a, b):
             return float((a - b).abs().max()) / (float(b.abs().max()) + 1e-12)
@@ -2304,26 +2565,37 @@ class ActivationMaximization:
             rel(b, a) for a, b in zip(orig, patched)
         )
 
-        is_vol = isinstance(layer, (nn.Conv3d, nn.ConvTranspose3d))
+        vol_types = (nn.Conv3d, nn.ConvTranspose3d, nn.BatchNorm3d)
+        is_vol = isinstance(layer, vol_types) or (
+            isinstance(layer, nn.Sequential)
+            and any(isinstance(m, vol_types) for m in layer)
+        )
         if disp_pxs is None:
             m = config.max_disp
             disp_pxs = (0, -m // 4, -m // 2) if (is_vol and m) else (None,)
 
         with analysis_mode(self.model):
             for k, dpx in enumerate(disp_pxs):
+
                 tag = f"[d={dpx}]"
-                base = replace(config, disp_idx=None, disp_px=dpx)
+                config_base = replace(self.config_am, disp_idx=None, disp_px=dpx)
                 generic = make_target(
-                    self.model, layer, replace(base, fast_path=False), normalizer, 0
+                    self.model,
+                    layer,
+                    replace(config_base, fast_path=False),
+                    normalizer,
+                    0,
                 )
+
                 with torch.no_grad():
                     batched = generic(x, ch)
                     single = torch.cat(
                         [generic(x[i : i + 1], ch[i : i + 1]) for i in range(n)]
                     )
+
                 rep[f"generic_batched_vs_single{tag}"] = rel(batched, single)
                 gg, aa = self.input_gradient(generic, x, ch)
-                fast = make_target(self.model, layer, base, normalizer, 0)
+                fast = make_target(self.model, layer, config_base, normalizer, 0)
                 if fast.kind == "fast":
                     with torch.no_grad():
                         fb = fast(x, ch)
@@ -2334,79 +2606,359 @@ class ActivationMaximization:
                     gf, af = self.input_gradient(fast, x, ch)
                     rep[f"fast_vs_generic_act{tag}"] = rel(af, aa)
                     rep[f"fast_vs_generic_grad{tag}"] = rel(gf, gg)
-                if k == 0:
-                    try:
-                        from captum.attr import NeuronGradient
+                # if k == 0:
+                #     try:
+                #         from captum.attr import NeuronGradient
 
-                        class _Wrap(nn.Module):
-                            def __init__(self, t):
-                                super().__init__()
-                                self.t, self.tap = t, nn.Identity()
+                #         class _Wrap(nn.Module):
+                #             def __init__(self, t):
+                #                 super().__init__()
+                #                 self.t, self.tap = t, nn.Identity()
 
-                            def forward(self, im):
-                                return self.tap(
-                                    self.t(im, ch[: im.shape[0]]).view(-1, 1)
-                                )
+                #             def forward(self, im):
+                #                 return self.tap(
+                #                     self.t(im, ch[: im.shape[0]]).view(-1, 1)
+                #                 )
 
-                        wrap = _Wrap(generic)
-                        xc = x[:1].clone().requires_grad_(True)
-                        gc = NeuronGradient(wrap, wrap.tap).attribute(
-                            xc, neuron_selector=0
-                        )
-                        rep["captum_vs_autograd"] = rel(gc, gg[:1])
-                    except ImportError:
-                        pass
+                #         wrap = _Wrap(generic)
+                #         xc = x[:1].clone().requires_grad_(True)
+                #         gc = NeuronGradient(wrap, wrap.tap).attribute(
+                #             xc, neuron_selector=0
+                #         )
+                #         rep["captum_vs_autograd"] = rel(gc, gg[:1])
+                #     except ImportError:
+                #         pass
             print(
                 f"sanity: target kind for this layer = "
-                f"{make_target(self.model, layer, config, normalizer, 0).kind}"
+                f"{make_target(self.model, layer, self.config_am, normalizer, 0).kind}"
             )
         for key, v in rep.items():
             print(f"sanity {key:44s} {v:.3e}  {'ok' if v <= tol else 'FAIL'}")
+
         return rep
 
+    def _plot_ablation(self, ax, u):
+        """
+        Bars of the four eye-ablation conditions + the interaction term of one unit.
+        Dashed line across 'both' = purely additive prediction (left + right - blank);
+        the gap between it and the bar top is the binocular interaction.
+        """
 
-# %%
-config = ConfigGCNet()
-config.load_state = True
-config.compile_mode = None  # prevent unexpected results
-config_am = ConfigAM()
-engine = EngineGCNet(config)
+        both, left, right, blank = (float(v) for v in u["abl"])
+        interaction_strength = float(u["interaction_strength"])
+        xs = [0, 1, 2, 3, 4.6]
+        vals = [both, left, right, blank, interaction_strength]
+        colors = ["tab:purple", "tab:blue", "tab:red", "0.6", "tab:green"]
+        bars = ax.bar(xs, vals, color=colors, width=0.7)
 
-am = ActivationMaximization(engine, config_am)
-for spec in am.target_layers:
+        ax.bar_label(bars, labels=[f"{v:.3g}" for v in vals], fontsize=7, padding=1)
+        ax.axhline(0, color="k", lw=0.6)
+        ax.axhline(blank, color="0.5", ls="--", lw=0.8)  # blank-pair baseline
+        ax.axvline(3.8, color="0.85", lw=0.8)
 
-    layer = am.model.get_submodule(spec["module"])
-    channels = spec["channels"]
-    if channels is None:
-        if not hasattr(layer, "out_channels"):
-            raise ValueError(
-                "Set channels explicitly for composite/nonconvolution modules"
-            )
-        channels = list(range(layer.out_channels))
-    config_am = replace(
-        config_am,
-        disp_idx=spec.get("disp_idx"),
-        disp_px=spec.get("disp_px"),
-    )
-    result = maximize_layer(
-        layer,
-        channels,
-        config_am,
-        normalizer,
-        call_index=spec["call"],
-        layer_name=spec["module"],
-    )
-    result["target_spec"] = spec
-    if SAVE_RESULTS:
-        torch.save(result, am.am_dir / (spec["name"] + ".pt"))
-    # per-unit pages: curve | left | right | sensitivity crops | eye ablation
-    am.plot_layer(
-        spec["name"], result, am.am_dir / (spec["name"] + ".png"), show=SHOW_FIGURES
-    )
-    # one population overview of the eye ablation for this layer
-    am.plot_ablation_summary(
-        spec["name"],
+        ax.hlines(  # additive prediction drawn across the 'both' bar
+            left + right - blank,
+            -0.45,
+            0.45,
+            colors="k",
+            linestyles="--",
+            lw=1.4,
+            zorder=4,
+            label="additive: L+R-blank",
+        )
+
+        ax.set_xticks(
+            xs,
+            ["both", "L only", "R only", "blank", "interaction"],
+            rotation=30,
+            ha="right",
+            fontsize=10,
+        )
+        ax.margins(y=0.3)
+        ax.set_ylabel("Raw activation")
+        ax.set_title("Eye ablation (optimised pair)", fontsize=12)
+        ax.legend(fontsize=7, framealpha=0.8, loc="upper right")
+
+        # Hide the right and top spines
+        ax.spines["right"].set_visible(False)
+        ax.spines["top"].set_visible(False)
+        # Only show ticks on the left and bottom spines
+        ax.yaxis.set_ticks_position("left")
+        ax.xaxis.set_ticks_position("bottom")
+
+    def plot_layer(
+        self,
+        name,
         result,
-        am.am_dir / (spec["name"] + "_ablation_summary.png"),
-        show=SHOW_FIGURES,
-    )
+        path=None,
+        rows_per_page=6,
+        show=False,
+        contrast_norm=True,
+        dpi=300,
+    ):
+
+        if rows_per_page < 1:
+            raise ValueError("rows_per_page must be positive")
+
+        sns.set_theme()
+        sns.set_theme(context="paper", style="white", font_scale=1.3, palette="deep")
+
+        units = result["units"]
+        saved = []
+        for page, start in enumerate(range(0, len(units), rows_per_page)):
+            subset = units[start : start + rows_per_page]
+
+            figsize = (25, 4 * len(subset))
+            n_row = len(subset)
+            n_col = 6
+            fig, axes = plt.subplots(n_row, n_col, figsize=figsize, squeeze=False)
+            fig.text(
+                0.5,
+                0.98,
+                f'{name}: call {result["call_index"]}; per-eye sensitivity crops'
+                + (
+                    "; contrast-normalized"
+                    if contrast_norm
+                    else "; no contrast-normalized"
+                ),
+                ha="center",
+                fontsize=20,
+            )
+            # plt.tight_layout(rect=[0, 0, 1, 0.95])
+            # plt.subplots_adjust(hspace=0.5)
+
+            for row, u in enumerate(subset):
+
+                # plot learning curve
+                ax = axes[row]
+                steps = u["trace_steps"].numpy()
+
+                for train, ident in zip(u["train_traces"], u["restart_traces"]):
+                    ax[0].plot(
+                        train.numpy(), color="0.8", lw=0.8
+                    )  # activation to jittered synthesized image
+                    ax[0].plot(
+                        steps, ident.numpy(), lw=1.5
+                    )  # activation to un-jittered synthesized image
+
+                # best activation to un-jittered synthesized image
+                ax[0].scatter(
+                    [u["best_step"]], [u["act"]], color="black", s=14, zorder=3
+                )
+
+                act, left_only, right_only, blank_resp = u["abl"].tolist()
+                disp = (
+                    ""
+                    if u["implied_disparity_px"] is None
+                    else f"; disp={u['implied_disparity_px']:+.0f}px"
+                )
+
+                ax[0].set_title(
+                    f'ch {u["channel"]}: Act={act:.3g}; blank={blank_resp:.3g}{disp}\n'
+                    f'L={left_only:.3g}; R={right_only:.3g}; interaction_strgth={float(u["interaction_strength"]):.3g}',
+                    fontsize=9,
+                )
+                ax[0].set(
+                    xlabel="Step (gray: activation to jittered input\n colour: unjittered input)",
+                    ylabel="Raw activation",
+                )
+
+                # plot activation maximization image
+                img = u["img"]
+
+                if contrast_norm:
+                    sel = [img[e] for e in range(2) if u["driven"][e]]
+                    if sel:
+                        lo = min(float(s.min()) for s in sel)
+                        hi = max(float(s.max()) for s in sel)
+                        img = ((img - lo) / (hi - lo + 1e-8)).clamp(0, 1)
+
+                # Hide the right and top spines
+                ax[0].spines["right"].set_visible(False)
+                ax[0].spines["top"].set_visible(False)
+                # Only show ticks on the left and bottom spines
+                ax[0].yaxis.set_ticks_position("left")
+                ax[0].xaxis.set_ticks_position("bottom")
+
+                for eye, label in enumerate(("Physical left", "Physical right")):
+                    image = img[eye].permute(1, 2, 0).numpy()
+
+                    if u["driven"][eye]:
+                        ax[1 + eye].imshow(image, vmin=0, vmax=1)
+
+                    else:
+                        ax[1 + eye].text(
+                            0.5,
+                            0.5,
+                            "not driven\n(zero gradient)",
+                            ha="center",
+                            va="center",
+                            transform=ax[1 + eye].transAxes,
+                            fontsize=12,
+                        )
+
+                    ax[1 + eye].set_title(
+                        label
+                        + (" [Contrast-normalized]" if contrast_norm else " [raw 0–1]"),
+                        fontsize=12,
+                    )
+                    box = u["rf_boxes"][eye]
+
+                    if box is None:
+                        ax[3 + eye].text(
+                            0.5,
+                            0.5,
+                            "No sampled sensitivity",
+                            ha="center",
+                            va="center",
+                            transform=ax[3 + eye].transAxes,
+                            fontsize=12,
+                        )
+                    else:
+                        y0, y1, x0, x1 = box
+                        ax[3 + eye].imshow(image[y0:y1, x0:x1], vmin=0, vmax=1)
+                        ax[3 + eye].set_title(
+                            f"{label} sensitivity crop\ny[{y0}:{y1}] x[{x0}:{x1}]",
+                            fontsize=12,
+                        )
+
+                    ax[1 + eye].axis("off")
+                    ax[3 + eye].axis("off")
+
+                # plot eye ablation (values computed by eye_ablation)
+                self._plot_ablation(ax[5], u)
+
+            plt.tight_layout(rect=[0, 0, 1, 0.95])
+
+            if path is not None:
+                p = Path(path)
+                p.parent.mkdir(parents=True, exist_ok=True)
+                filename = p.with_name(p.stem + f"_p{page}" + (p.suffix or ".pdf"))
+                fig.savefig(filename, dpi=dpi)
+                saved.append(filename)
+
+            if show:
+                plt.show()
+            plt.close(fig)
+
+        return saved
+
+    def plot_ablation_summary(self, name, result, path=None, show=False, dpi=300):
+        """
+        One population overview of the eye ablation of all units in a layer.
+        Left: monocular drive (left-only minus blank vs right-only minus blank), coloured
+        by the binocular interaction; points on the diagonal respond equally to both eyes.
+        Right: per-channel baseline-relative responses and interaction.
+        """
+
+        units = result["units"]
+        chans = [u["channel"] for u in units]
+        rel = np.stack(
+            [u["baseline_relative"].numpy() for u in units]
+        )  # [U,3] both,L,R
+        interaction_strength = np.array(
+            [float(u["interaction_strength"]) for u in units]
+        )
+        # floor: an exactly additive layer has interaction == float noise; do not let the
+        # colour scale magnify it
+        lim = max(
+            float(np.abs(interaction_strength).max()),
+            1e-3 * float(np.abs(rel).max()),
+            1e-12,
+        )
+
+        fig, (axis1, axis2) = plt.subplots(
+            1, 2, figsize=(15, 4.8), gridspec_kw=dict(width_ratios=[1, 2.2])
+        )
+        sc = axis1.scatter(
+            rel[:, 1],
+            rel[:, 2],
+            c=interaction_strength,
+            cmap="coolwarm",
+            vmin=-lim,
+            vmax=lim,
+            s=28,
+            edgecolor="k",
+            linewidth=0.4,
+        )
+        if len(units) <= 64:
+            for x_, y_, c_ in zip(rel[:, 1], rel[:, 2], chans):
+                axis1.annotate(
+                    str(c_),
+                    (x_, y_),
+                    fontsize=6,
+                    xytext=(2, 2),
+                    textcoords="offset points",
+                )
+        lo = min(rel[:, 1].min(), rel[:, 2].min(), 0.0)
+        hi = max(rel[:, 1].max(), rel[:, 2].max(), 0.0)
+        axis1.plot([lo, hi], [lo, hi], color="0.6", ls="--", lw=0.8)
+        axis1.axhline(0, color="k", lw=0.5)
+        axis1.axvline(0, color="k", lw=0.5)
+        axis1.set(
+            xlabel="left only − blank",
+            ylabel="right only − blank",
+            title="Monocular drive (colour = interaction)",
+        )
+        # Hide the right and top spines
+        axis1.spines["right"].set_visible(False)
+        axis1.spines["top"].set_visible(False)
+        # Only show ticks on the left and bottom spines
+        axis1.yaxis.set_ticks_position("left")
+        axis1.xaxis.set_ticks_position("bottom")
+
+        fig.colorbar(sc, ax=axis1, label="interaction")
+
+        xs = np.arange(len(units))
+        wd = 0.27
+        axis2.bar(xs - wd, rel[:, 1], wd, color="tab:blue", label="left only − blank")
+        axis2.bar(xs, rel[:, 2], wd, color="tab:red", label="right only − blank")
+        axis2.bar(xs + wd, rel[:, 0], wd, color="tab:purple", label="both − blank")
+        axis2.scatter(
+            xs,
+            interaction_strength,
+            marker="D",
+            s=14,
+            color="tab:green",
+            zorder=3,
+            label="interaction",
+        )
+        axis2.axhline(0, color="k", lw=0.6)
+        axis2.set_xticks(
+            xs,
+            [str(c_) for c_ in chans],
+            fontsize=6,
+            rotation=90 if len(units) > 24 else 0,
+        )
+        axis2.set(
+            xlabel="channel",
+            ylabel="activation relative to blank pair",
+            title="Eye ablation per channel",
+        )
+        axis2.legend(
+            fontsize=7,
+            frameon=False,
+            ncol=4,
+            loc="upper center",
+            bbox_to_anchor=(0.5, 1.0),
+        )
+        axis2.margins(y=0.2)
+
+        # Hide the right and top spines
+        axis2.spines["right"].set_visible(False)
+        axis2.spines["top"].set_visible(False)
+        # Only show ticks on the left and bottom spines
+        axis2.yaxis.set_ticks_position("left")
+        axis2.xaxis.set_ticks_position("bottom")
+
+        fig.suptitle(f"{name}: eye-ablation summary (call {result['call_index']})")
+        fig.tight_layout()
+        saved = None
+        if path is not None:
+            saved = Path(path)
+            saved.parent.mkdir(parents=True, exist_ok=True)
+            fig.savefig(saved, dpi=dpi)
+        if show:
+            plt.show()
+        plt.close(fig)
+        return saved
