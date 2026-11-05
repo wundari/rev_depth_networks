@@ -22,8 +22,6 @@ from utilities.misc import NestedTensor
 
 from engine.engine_bnn import EngineBNN
 from engine.engine_gcnet_lr import EngineGCNet
-from config.config_bnn import ConfigBNN
-from config.config_gcnet_lr import ConfigGCNet
 from config.config_am import ConfigAM
 
 torch.backends.cudnn.benchmark = (
@@ -42,9 +40,9 @@ torch.use_deterministic_algorithms(True, warn_only=True)
 class RGBNormalize(nn.Module):
     """
     Differentiable input normalization layer that scales raw [0, 1] RGB images
-            to match dataset training statistics (e.g., ImageNet mean & std).
-            Placed directly inside the optimization graph so gradients flow seamlessly
-            back into the stimulus generator parameters.
+        to match dataset training statistics (e.g., ImageNet mean & std).
+        Placed directly inside the optimization graph so gradients flow seamlessly
+        back into the stimulus generator parameters.
 
     """
 
@@ -1682,6 +1680,7 @@ class ActivationMaximization:
                     module="decoder.layer3.0",
                     call=0,
                     channels=None,
+                    disp_px=0,
                 ),
                 # disparity sweep:
                 # *[dict(name=f"decoder_layer3_pre_d{d:+d}", module="decoder.layer3.0", call=0,
@@ -1717,7 +1716,7 @@ class ActivationMaximization:
             # in [left, right] features, so their eye-ablation interaction is exactly 0.  Use
             # "post" (or "bem") to see interaction.  Layer 37 has no BatchNorm/ReLU (always conv).
 
-            GC_STAGE = "pre"
+            GC_STAGE = "pre_relu"
             GC_LAYERS = [
                 "19",
                 "20",
@@ -1771,7 +1770,7 @@ class ActivationMaximization:
                     )
                     continue
 
-                suffix = {"pre": ".0", "bn": ".1", "post": ""}[GC_STAGE]
+                suffix = {"pre_relu": ".0", "bn": ".1", "post": ""}[GC_STAGE]
                 self.target_layers.append(
                     dict(
                         name=f"decoder_layer{n}_{GC_STAGE}",
@@ -2535,7 +2534,6 @@ class ActivationMaximization:
         2. batched == one-by-one (generic AND fast target: no cross-sample leakage);
         3. fast path == generic hook path (value and input gradient), at several
         disparities including the first depth slice (zero padding along disparity);
-        4. optional: Captum NeuronGradient == autograd.
         Relative errors above `tol` are flagged FAIL.
         """
         c, h, w = self.config_am.input_size
@@ -2694,7 +2692,7 @@ class ActivationMaximization:
         rows_per_page=6,
         show=False,
         contrast_norm=True,
-        dpi=300,
+        dpi=600,
     ):
 
         if rows_per_page < 1:
@@ -2715,7 +2713,7 @@ class ActivationMaximization:
             fig.text(
                 0.5,
                 0.98,
-                f'{name}: call {result["call_index"]}; per-eye sensitivity crops'
+                f'{self.model_name} - {self.config.binocular_interaction} - {name}: call {result["call_index"]}; per-eye sensitivity crops'
                 + (
                     "; contrast-normalized"
                     if contrast_norm
@@ -2724,8 +2722,6 @@ class ActivationMaximization:
                 ha="center",
                 fontsize=20,
             )
-            # plt.tight_layout(rect=[0, 0, 1, 0.95])
-            # plt.subplots_adjust(hspace=0.5)
 
             for row, u in enumerate(subset):
 
@@ -2843,7 +2839,7 @@ class ActivationMaximization:
 
         return saved
 
-    def plot_ablation_summary(self, name, result, path=None, show=False, dpi=300):
+    def plot_ablation_summary(self, name, result, path=None, show=False, dpi=600):
         """
         One population overview of the eye ablation of all units in a layer.
         Left: monocular drive (left-only minus blank vs right-only minus blank), coloured

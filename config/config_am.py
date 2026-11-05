@@ -67,7 +67,7 @@ class ConfigAM:
     disp_px: float | None = (
         None  # alternative: disparity in input pixels (needs max_disp)
     )
-    max_disp: int | None = None  # config.max_disp; needed for disp_px / reporting
+    max_disp: int = 192  # config.max_disp; needed for disp_px / reporting
     window: int = 3  # controls the spatial neighborhood size (W X W) extracted and
     # averaged from the target feature map to form the optimization objective.
     # must be odd number.
@@ -83,7 +83,9 @@ class ConfigAM:
     seed: int = 42
     rf_samples: int = 4  # additional independent random probes
     rf_mass: float = 0.95
-    baseline: float = 0.5  # raw RGB baseline used for ablation
+    baseline: float = (
+        0.5  # raw RGB baseline used for ablation analysis (the pixel values for blank images)
+    )
 
     # --- performance
     batch_size: int = (
