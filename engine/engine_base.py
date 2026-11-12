@@ -45,6 +45,7 @@ class EngineBase:
 
         self.config = config
         self.model_name = config.model_name
+        self.interaction = config.binocular_interaction
         self.device = config.device
         self.h = config.img_height
         self.w = config.img_width
@@ -57,6 +58,9 @@ class EngineBase:
 
         # dataset directory
         self.make_dirs()
+
+        # update epoch_to_load and iter_to_load
+        self.update_epoch_iter_to_load()
 
         # save config file
         self.save_config()
@@ -97,6 +101,26 @@ class EngineBase:
 
         # print out training params:
         self.__getconfig__()
+
+    def update_epoch_iter_to_load(self):
+
+        # find seed index
+        seed_idx = self.config.seed_to_analyse.index(self.config.seed)
+
+        if self.interaction == "default":
+            epoch, iter = self.config.epoch_iter_to_load_default[seed_idx]
+        elif self.interaction == "bem":
+            epoch, iter = self.config.epoch_iter_to_load_bem[seed_idx]
+        elif self.interaction == "cmm":
+            epoch, iter = self.config.epoch_iter_to_load_cmm[seed_idx]
+        else:  # sum_diff
+            epoch, iter = self.config.epoch_iter_to_load_sum_diff[seed_idx]
+
+        # update config
+        self.config.epoch_to_load = epoch
+        self.config.iter_to_load = iter
+        self.config.model_pretrained = f"epoch_{epoch}_iter_{iter}_model_best.pth.tar"  # pretrained file name, e.g: epoch_1_model.pth.tar
+        self.config.experiment_id = self.config.seed
 
     def __getconfig__(self):
         print(

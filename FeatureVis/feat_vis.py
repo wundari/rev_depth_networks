@@ -1572,6 +1572,10 @@ class ActivationMaximization:
 
         self.model = self.engine.model
         self.model_name = self.engine.model_name
+        self.interaction = self.config.binocular_interaction
+
+        # update epoch_iter_to load
+        self.update_epoch_iter_to_load()
 
         # set up output directories
         self.make_dirs()
@@ -1587,6 +1591,25 @@ class ActivationMaximization:
 
         # print out parameters for activation maximization
         self.print_am_params()
+
+    def update_epoch_iter_to_load(self):
+
+        # find seed index
+        seed_idx = self.config.seed_to_analyse.index(self.config.seed)
+
+        if self.interaction == "default":
+            epoch, iter = self.config.epoch_iter_to_load_default[seed_idx]
+        elif self.interaction == "bem":
+            epoch, iter = self.config.epoch_iter_to_load_bem[seed_idx]
+        elif self.interaction == "cmm":
+            epoch, iter = self.config.epoch_iter_to_load_cmm[seed_idx]
+        else:  # sum_diff
+            epoch, iter = self.config.epoch_iter_to_load_sum_diff[seed_idx]
+
+        # update config
+        self.config.epoch_to_load = epoch
+        self.config.iter_to_load = iter
+        self.config.model_pretrained = f"epoch_{epoch}_iter_{iter}_model_best.pth.tar"  # pretrained file name, e.g: epoch_1_model.pth.tar
 
     def make_dirs(self):
 
@@ -1634,8 +1657,10 @@ class ActivationMaximization:
 
     def _list_candidate_layers(self):
         kinds = (nn.Conv2d, nn.Conv3d, nn.ConvTranspose2d, nn.ConvTranspose3d)
+        self.n_channels_list = []
         for name, module in self.model.named_modules():
             if isinstance(module, kinds):
+                self.n_channels_list.append(module.out_channels)
                 print(
                     f"{name:24} {type(module).__name__:24} out_channels={module.out_channels}"
                 )
@@ -1681,6 +1706,7 @@ class ActivationMaximization:
                     call=0,
                     channels=None,
                     disp_px=0,
+                    input_size=(3, 64, 64),
                 ),
                 # disparity sweep:
                 # *[dict(name=f"decoder_layer3_pre_d{d:+d}", module="decoder.layer3.0", call=0,
@@ -1699,6 +1725,7 @@ class ActivationMaximization:
                     call=0,
                     channels=[0],
                     disp_px=0,
+                    input_size=(3, 64, 64),
                 ),
             ]
         else:  # gcnet variants
@@ -1717,27 +1744,51 @@ class ActivationMaximization:
             # "post" (or "bem") to see interaction.  Layer 37 has no BatchNorm/ReLU (always conv).
 
             GC_STAGE = "pre_relu"
-            GC_LAYERS = [
-                "19",
-                "20",
-                "21",
-                "22",
-                "23",
-                "24",
-                "25",
-                "26",
-                "27",
-                "28",
-                "29",
-                "30",
-                "31",
-                "32",
-                "33a",
-                "34a",
-                "35a",
-                "36a",
-                "37",
-            ]  # edit to run a subset
+            GC_LAYERS = {
+                "19": (3, 64, 64),
+                "20": (3, 64, 64),
+                "21": (3, 64, 64),
+                "22": (3, 64, 64),
+                "23": (3, 64, 64),
+                "24": self.config_am.input_size,
+                "25": self.config_am.input_size,
+                "26": self.config_am.input_size,
+                "27": self.config_am.input_size,
+                "28": self.config_am.input_size,
+                "29": self.config_am.input_size,
+                "30": self.config_am.input_size,
+                "31": self.config_am.input_size,
+                "32": self.config_am.input_size,
+                "33a": self.config_am.input_size,
+                "34a": self.config_am.input_size,
+                "35a": self.config_am.input_size,
+                "36a": (3, 64, 64),
+                "37": (3, 64, 64),
+            }  # edit to run a subset
+
+            # GC_LAYERS = {
+            #     "19": (3, 64, 64),
+            #     "20": (3, 64, 64),
+            #     "21": (3, 64, 64),
+            #     "22": (3, 64, 64),
+            #     "23": (3, 64, 64),
+            #     "24": (3, 96, 96),
+            #     "25": (3, 96, 96),
+            #     "26": (3, 96, 96),
+            #     "27": (3, 96, 96),
+            #     "28": (3, 96, 96),
+            #     "29": (3, 96, 96),
+            #     "30": (3, 96, 96),
+            #     "31": (3, 96, 96),
+            #     "32": (3, 96, 96),
+            #     "33a": (3, 96, 96),
+            #     "34a": (3, 96, 96),
+            #     "35a": (3, 96, 96),
+            #     "36a": (3, 64, 64),
+            #     "37": (3, 64, 64),
+            # }  # edit to run a subset
+            # for layer, input_size in GC_LAYERS.items():
+            #     print(layer, input_size)
 
             # window is in the layer's OWN pixels; one pixel covers 2 (layers 19/20/36a) up to 32
             # (layers 30-32) input px, so deeper layers need smaller windows (a 5x5 window at
@@ -1755,8 +1806,8 @@ class ActivationMaximization:
             # disp_px resolution (px per depth index): 19/20/36a 2; 21-23/35a 4; 24-26/34a 8;
             # 27-29/33a 16; 30-32 32; 37 1.  disp_px is rounded to the nearest index.
             self.target_layers = []
-            for n in GC_LAYERS:
-                if n == "37":
+            for layer, input_size in GC_LAYERS.items():
+                if layer == "37":
                     self.target_layers.append(
                         dict(
                             # model uses softmax(-cost), so sign=-1 (min cost) = preferred
@@ -1765,6 +1816,7 @@ class ActivationMaximization:
                             call=0,
                             channels=[0],
                             disp_px=0,
+                            input_size=input_size,
                             # window=GC_WINDOW.get(n),
                         )
                     )
@@ -1773,11 +1825,12 @@ class ActivationMaximization:
                 suffix = {"pre_relu": ".0", "bn": ".1", "post": ""}[GC_STAGE]
                 self.target_layers.append(
                     dict(
-                        name=f"decoder_layer{n}_{GC_STAGE}",
-                        module=f"decoder.layer{n}{suffix}",
+                        name=f"decoder_layer{layer}_{GC_STAGE}",
+                        module=f"decoder.layer{layer}{suffix}",
                         call=0,
                         channels=None,
                         disp_px=0,
+                        input_size=input_size,
                         # window=GC_WINDOW.get(n, 1),
                     )
                 )
@@ -2958,3 +3011,193 @@ class ActivationMaximization:
             plt.show()
         plt.close(fig)
         return saved
+
+    def _plotLine_interaction_helper(
+        self, ax, x, y, std, color, label, linestyle="-", alpha=0.2
+    ):
+        ax.plot(x, y, linewidth=2, color=color, label=label, linestyle=linestyle)
+        ax.plot(x, y, "o", markersize=12, color=color)
+        ax.fill_between(
+            x,
+            y - std,
+            y + std,
+            color=color,
+            alpha=0.2,
+        )
+
+    def plotLine_interaction_across_layers(self, save_flag: bool = True):
+        pass
+
+        bino_interaction_index_mean = np.zeros(
+            len(self.target_layers), dtype=np.float32
+        )
+        bino_interaction_index_std = np.zeros_like(bino_interaction_index_mean)
+        bino_resp_index_mean = np.zeros_like(bino_interaction_index_mean)
+        bino_resp_index_std = np.zeros_like(bino_interaction_index_mean)
+        mono_left_index_mean = np.zeros_like(bino_interaction_index_mean)
+        mono_left_index_std = np.zeros_like(bino_interaction_index_mean)
+        mono_right_index_mean = np.zeros_like(bino_interaction_index_mean)
+        mono_right_index_std = np.zeros_like(bino_interaction_index_mean)
+        mono_sum_index_mean = np.zeros_like(bino_interaction_index_mean)
+        mono_sum_index_std = np.zeros_like(bino_interaction_index_mean)
+
+        for i, layer in enumerate(self.target_layers):
+
+            # layer = am.target_layers[0]
+            layer_name = layer["name"]
+            # load activation maximization data
+            filename = f"{self.am_dir}/{layer_name}.pt"
+            units = torch.load(filename)["units"]
+
+            rel = np.stack(
+                [u["baseline_relative"].numpy() for u in units]
+            )  # [n_channels, 3] [both - blank, Left - blank, Right - blank]
+            interaction_strength = np.array(
+                [float(u["interaction_strength"]) for u in units]
+            )  # binocular - (monocular_left + monocular_right)
+
+            # normalize with respect to binocular-activation
+            # den = np.abs(rel[:, 0]) + np.abs()
+            # bino_interaction_index[layer_name] = interaction_strength / np.abs(rel).sum(
+            #     axis=-1
+            # )
+            # mono_left_index[layer_name] = rel[:, 1] / np.abs(rel).sum(axis=-1)
+            # mono_right_index[layer_name] = rel[:, 2] / np.abs(rel).sum(axis=-1)
+            den = np.abs(rel).sum(axis=-1)
+            bino_interaction_index_mean[i] = (interaction_strength / den).mean()
+            bino_interaction_index_std[i] = (
+                interaction_strength / np.abs(rel).sum(axis=-1)
+            ).std()
+            mono_left_index_mean[i] = (rel[:, 1] / den).mean()
+            mono_left_index_std[i] = (rel[:, 1] / den).std()
+            mono_right_index_mean[i] = (rel[:, 2] / den).mean()
+            mono_right_index_std[i] = (rel[:, 1] / den).std()
+            mono_sum_index_mean[i] = ((rel[:, 1] + rel[:, 2]) / den).mean()
+            mono_sum_index_std[i] = ((rel[:, 1] + rel[:, 2]) / den).std()
+            bino_resp_index_mean[i] = (rel[:, 0] / den).mean()
+            bino_resp_index_std[i] = (rel[:, 0] / den).std()
+
+        # plot line
+        sns.set_theme()
+        sns.set_theme(context="paper", style="white", font_scale=2, palette="deep")
+
+        figsize = (12, 6)
+        n_row = 1
+        n_col = 1
+
+        fig, axes = plt.subplots(
+            nrows=n_row, ncols=n_col, figsize=figsize, sharex=True, sharey=True
+        )
+
+        fig.text(
+            0.5,
+            1.0,
+            f"{self.model_name} - {self.interaction}: Binocular interaction strength across layers\n",
+            ha="center",
+        )
+        fig.text(-0.04, 0.5, "Interaction index", va="center", rotation=90)
+        fig.text(0.5, -0.04, "Layer", ha="center")
+        fig.tight_layout()
+
+        plt.subplots_adjust(wspace=0.2, hspace=0.3)
+
+        # colors = ["#6a5acd", "#00CED1", "#333333", "#DC143C", "#FFA500"]
+        colors = ["#0072B2", "#D62728", "#009E73", "#9467BD"]
+
+        if self.model_name == "BNN":
+            x = np.arange(3, 5)
+        else:  # GC-Net variants
+            x = np.arange(19, 38)
+
+        # plot mono_right_index_mean
+        y = np.array(mono_right_index_mean)
+        label = "Monocular right"
+        self._plotLine_interaction_helper(
+            axes,
+            x,
+            y,
+            mono_right_index_std,
+            colors[0],
+            label,
+            linestyle=":",
+            alpha=0.1,
+        )
+
+        # plot mono_left_index
+        y = np.array(mono_left_index_mean)
+        label = "Monocular left"
+        self._plotLine_interaction_helper(
+            axes, x, y, mono_left_index_std, colors[0], label, linestyle="--", alpha=0.1
+        )
+
+        # plot mono_sum
+        y = np.array(mono_sum_index_mean)
+        label = "Monocular sum"
+        self._plotLine_interaction_helper(
+            axes, x, y, mono_sum_index_std, colors[1], label
+        )
+
+        # plot bino_resp
+        y = np.array(bino_resp_index_mean)
+        label = "Binocular response"
+        self._plotLine_interaction_helper(
+            axes, x, y, bino_resp_index_std, colors[2], label
+        )
+
+        # plot binocular_interaction_index
+        y = np.array(bino_interaction_index_mean)
+        label = "Binocular interaction"
+        self._plotLine_interaction_helper(
+            axes, x, y, bino_interaction_index_std, colors[3], label
+        )
+
+        if self.model_name == "BNN":
+            x_low = 3
+            x_up = 5
+            x_step = 1
+        else:  # GC-Net variants
+            x_low = 19
+            x_up = 38
+            x_step = 2
+        y_low = -0.5
+        y_up = 1.1
+        y_step = 0.25
+
+        # plot chance level
+        # axes.hlines(
+        #     [0.5], xmin=x_low - 1, xmax=x_up, colors="red", linestyles="--", linewidth=3
+        # )
+
+        axes.set_xticks(np.round(np.arange(x_low, x_up, x_step), 2))
+        axes.set_xticklabels(np.round(np.arange(x_low, x_up, x_step), 2))
+        axes.set_yticks(np.round(np.arange(y_low, y_up, y_step), 2))
+        axes.set_yticklabels(np.round(np.arange(y_low, y_up, y_step), 2))
+
+        axes.set_xlim(x_low - 1, x_up)
+        axes.set_ylim(y_low, y_up)
+
+        # Hide the right and top spines
+        axes.spines["right"].set_visible(False)
+        axes.spines["top"].set_visible(False)
+
+        # Only show ticks on the left and bottom spines
+        axes.yaxis.set_ticks_position("left")
+        axes.xaxis.set_ticks_position("bottom")
+        # axes.tick_params(direction='in', length=4, width=1)
+
+        plt.legend(
+            loc="upper center",
+            fontsize=16,
+            frameon=False,
+            bbox_to_anchor=(0.5, -0.2),
+            ncol=3,
+        )
+        # bbox_to_anchor=(0.525, 0.95))
+
+        # save figure
+        if save_flag == 1:
+            fig.savefig(
+                f"{self.am_dir}/PlotLine_interaction_strength_across_layers.pdf",
+                dpi=600,
+                bbox_inches="tight",
+            )

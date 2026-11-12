@@ -9,7 +9,7 @@ from dataclasses_json import dataclass_json
 class ConfigBNN(Config):
 
     model_name: str = "BNN"
-    binocular_interaction: str = "sum_diff"
+    binocular_interaction: str = "default"
     seed: int = 1618
 
     # Preserve physical eye identity throughout
@@ -27,7 +27,7 @@ class ConfigBNN(Config):
     ), "n_rds_each_disp must be divisible by batch_size_rds"
 
     # resume from checkpoint
-    load_state: bool = False
+    load_state: bool = True
     if load_state:
         compile_mode = None
     experiment_id: int = seed  # experiment id for loading pretrained DNN

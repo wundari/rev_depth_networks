@@ -2,28 +2,16 @@ def main():
     from FeatureVis.feat_vis import ActivationMaximization, RGBNormalize
     from config.config_am import ConfigAM
     from config.config_bnn import ConfigBNN
-    from config.config_gcnet_lr import ConfigGCNet
     from engine.engine_bnn import EngineBNN
-    from engine.engine_gcnet_lr import EngineGCNet
 
     import torch
 
-    dnn_type = "gcnet"
-    if dnn_type == "bnn":
-        config = ConfigBNN()
-        config.load_state = True
-        config.compile_mode = None  # prevent unexpected results
-        config_am = ConfigAM()
-        config_am.size_multiple = 2
-        engine = EngineBNN(config)
-
-    elif dnn_type == "gcnet":
-        config = ConfigGCNet()
-        config.load_state = True
-        config.compile_mode = None  # prevent unexpected result
-        config_am = ConfigAM()
-        config_am.size_multiple = 32
-        engine = EngineGCNet(config)
+    config = ConfigBNN()
+    config.load_state = True
+    config.compile_mode = None  # prevent unexpected results
+    config_am = ConfigAM()
+    config_am.size_multiple = 2
+    engine = EngineBNN(config)
 
     am = ActivationMaximization(engine, config_am)
 
@@ -42,6 +30,7 @@ def main():
             channels = list(range(module.out_channels))
 
         # update config_am
+        config_am.input_size = layer.get("input_size")
         config_am.disp_idx = layer.get("disp_idx")
         config_am.disp_px = layer.get("disp_px")
 
