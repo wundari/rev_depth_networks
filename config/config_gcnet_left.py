@@ -1,11 +1,11 @@
-from config.config import Config
+from config.config_base import ConfigBase
 from dataclasses import dataclass, field
 from dataclasses_json import dataclass_json
 
 
 @dataclass_json
 @dataclass
-class ConfigGCNet(Config):
+class ConfigGCNet(ConfigBase):
 
     model_name: str = "GC_Net_L"
     binocular_interaction: str = "bem"
@@ -14,7 +14,7 @@ class ConfigGCNet(Config):
     # RDS parameters
     batch_size_rds: int = 8
     assert (
-        Config.n_rds_each_disp % batch_size_rds == 0
+        ConfigBase.n_rds_each_disp % batch_size_rds == 0
     ), "n_rds_each_disp must be divisible by batch_size_rds"
 
     # resume from checkpoint

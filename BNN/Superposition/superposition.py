@@ -7,7 +7,7 @@ from torch.utils.data import DataLoader
 from torchvision.transforms import transforms
 
 from engine.engine_base import EngineBase
-from config.config import ConfigBNN
+from config.config_bnn import ConfigBNN
 from RDS.DataHandler_RDS import RDS_Handler, DatasetRDS
 from utilities.misc import NestedTensor
 

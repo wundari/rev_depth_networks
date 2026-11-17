@@ -4,7 +4,7 @@ from torch import Tensor
 
 from modules.bnn import build_bnn
 
-from config.config import ConfigBNN
+from config.config_bnn import ConfigBNN
 import os
 
 

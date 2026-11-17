@@ -1,5 +1,5 @@
 # %% load necessary modules
-from config.config import ConfigGCNet
+from config.config_gcnet import ConfigGCNet
 from GroupAnalysis.group_analysis_rds import GA_RDS
 
 import numpy as np

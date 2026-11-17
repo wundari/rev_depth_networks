@@ -10,7 +10,7 @@ from dataclasses_json import dataclass_json
 # %%
 @dataclass_json
 @dataclass
-class Config:
+class ConfigBase:
 
     # learning params
     lr: float = 6e-4

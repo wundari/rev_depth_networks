@@ -35,7 +35,7 @@ patch_sklearn()
 from sklearn import svm
 
 from jaxtyping import Float
-from config.config import ConfigGCNet
+from config.config_gcnet_lr import ConfigGCNet
 
 # reproducibility
 import random

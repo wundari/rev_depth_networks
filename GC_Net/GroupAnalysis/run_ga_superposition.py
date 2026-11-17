@@ -1,7 +1,7 @@
 # %%
 import numpy as np
 
-from config.config import ConfigGCNet
+from config.config_gcnet import ConfigGCNet
 from GroupAnalysis.group_analysis_superposition import GA_Superposition
 
 # %%

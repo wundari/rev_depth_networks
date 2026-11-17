@@ -7,7 +7,7 @@ from torch.utils.data import DataLoader
 from torchvision.transforms import transforms
 
 from engine.engine_base import EngineBase
-from config.config import ConfigGCNet
+from config.config_gcnet import ConfigGCNet
 
 import numpy as np
 from jaxtyping import Float

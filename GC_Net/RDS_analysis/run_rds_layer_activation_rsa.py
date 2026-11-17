@@ -2,7 +2,7 @@
 from RDS_analysis.rds_layer_activation_rsa import RDS_LayerAct_RSA
 import numpy as np
 
-from config.config import ConfigGCNet
+from config.config_gcnet import ConfigGCNet
 
 # %% load GCNet config
 config = ConfigGCNet()

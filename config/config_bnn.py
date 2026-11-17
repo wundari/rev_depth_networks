@@ -1,4 +1,4 @@
-from config.config import Config
+from config.config_base import ConfigBase
 from dataclasses import dataclass, field
 from dataclasses_json import dataclass_json
 
@@ -6,7 +6,7 @@ from dataclasses_json import dataclass_json
 # %%
 @dataclass_json
 @dataclass
-class ConfigBNN(Config):
+class ConfigBNN(ConfigBase):
 
     model_name: str = "BNN"
     binocular_interaction: str = "default"
@@ -23,7 +23,7 @@ class ConfigBNN(Config):
     # RDS parameters
     batch_size_rds: int = 8  # if binocular_interaction == "bem" else 16
     assert (
-        Config.n_rds_each_disp % batch_size_rds == 0
+        ConfigBase.n_rds_each_disp % batch_size_rds == 0
     ), "n_rds_each_disp must be divisible by batch_size_rds"
 
     # resume from checkpoint

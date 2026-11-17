@@ -3,11 +3,9 @@ import torch
 import torch.nn.functional as F
 
 from torch import Tensor
-from torch.utils.data import DataLoader
-from torchvision.transforms import transforms
 
 from modules.gcnet import build_gcnet
-from config.config import ConfigGCNet
+from config.config_gcnet_lr import ConfigGCNet
 
 import numpy as np
 import pandas as pd
@@ -21,10 +19,6 @@ from scipy.stats import sem
 import pingouin as pg
 import statsmodels.stats.multicomp as mc
 from statsmodels.stats.multicomp import pairwise_tukeyhsd
-
-
-from RDS.DataHandler_RDS import RDS_Handler, DatasetRDS
-from utilities.misc import NestedTensor
 
 
 # %%

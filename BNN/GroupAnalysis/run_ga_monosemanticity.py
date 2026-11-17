@@ -1,5 +1,5 @@
 # %% load necessary modules
-from config.config import ConfigBNN
+from config.config_bnn import ConfigBNN
 from GroupAnalysis.group_analysis_monosemanticity import GA_Monosemanticity
 
 import numpy as np
