@@ -9,7 +9,7 @@ from dataclasses_json import dataclass_json
 class ConfigBNN(ConfigBase):
 
     model_name: str = "BNN"
-    binocular_interaction: str = "default"
+    binocular_interaction: str = "sum_diff"
     seed: int = 1618
 
     # Preserve physical eye identity throughout

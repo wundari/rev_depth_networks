@@ -9,7 +9,7 @@ class ConfigGCNet(ConfigBase):
 
     model_name: str = "GC_Net_LR"
     binocular_interaction: str = "sum_diff"
-    seed: int = 35154
+    seed: int = 1618
 
     # Preserve physical eye identity throughout
     # the dataset/model pipeline.

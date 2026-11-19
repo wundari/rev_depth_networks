@@ -165,11 +165,6 @@ class EngineBase:
             os.makedirs(self.save_dir)
 
         # experiment directory
-        # runs = natsorted(glob.glob(os.path.join(self.save_dir, "experiment_*")))
-        # if self.config.load_state:
-        #     run_id = self.config.experiment_id
-        # else:
-        #     # run_id = int(runs[-1].split("_")[-1]) + 1 if runs else 0
         run_id = self.config.seed
         self.experiment_dir = os.path.join(
             self.save_dir,

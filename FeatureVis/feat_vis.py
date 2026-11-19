@@ -1575,7 +1575,7 @@ class ActivationMaximization:
         self.interaction = self.config.binocular_interaction
 
         # update epoch_iter_to load
-        self.update_epoch_iter_to_load()
+        self.engine.update_epoch_iter_to_load()
 
         # set up output directories
         self.make_dirs()
@@ -1591,25 +1591,6 @@ class ActivationMaximization:
 
         # print out parameters for activation maximization
         self.print_am_params()
-
-    def update_epoch_iter_to_load(self):
-
-        # find seed index
-        seed_idx = self.config.seed_to_analyse.index(self.config.seed)
-
-        if self.interaction == "default":
-            epoch, iter = self.config.epoch_iter_to_load_default[seed_idx]
-        elif self.interaction == "bem":
-            epoch, iter = self.config.epoch_iter_to_load_bem[seed_idx]
-        elif self.interaction == "cmm":
-            epoch, iter = self.config.epoch_iter_to_load_cmm[seed_idx]
-        else:  # sum_diff
-            epoch, iter = self.config.epoch_iter_to_load_sum_diff[seed_idx]
-
-        # update config
-        self.config.epoch_to_load = epoch
-        self.config.iter_to_load = iter
-        self.config.model_pretrained = f"epoch_{epoch}_iter_{iter}_model_best.pth.tar"  # pretrained file name, e.g: epoch_1_model.pth.tar
 
     def make_dirs(self):
 
@@ -3026,7 +3007,7 @@ class ActivationMaximization:
         )
 
     def plotLine_interaction_across_layers(self, save_flag: bool = True):
-        pass
+        # pass
 
         bino_interaction_index_mean = np.zeros(
             len(self.target_layers), dtype=np.float32
@@ -3101,7 +3082,6 @@ class ActivationMaximization:
 
         plt.subplots_adjust(wspace=0.2, hspace=0.3)
 
-        # colors = ["#6a5acd", "#00CED1", "#333333", "#DC143C", "#FFA500"]
         colors = ["#0072B2", "#D62728", "#009E73", "#9467BD"]
 
         if self.model_name == "BNN":
