@@ -10,7 +10,7 @@ class ConfigBNN(ConfigBase):
 
     model_name: str = "BNN"
     binocular_interaction: str = "sum_diff"
-    seed: int = 1618
+    seed: int = 94750
 
     # Preserve physical eye identity throughout
     # the dataset/model pipeline.

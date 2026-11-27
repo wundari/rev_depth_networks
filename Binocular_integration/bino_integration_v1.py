@@ -31,7 +31,7 @@ class BinocularIntegration:
         self.config_bi = config_bi
 
         self.model_name = engine.model_name
-        self.interaction = engine.interaction
+        self.interaction = engine.binocular_interaction
         self.model = getattr(
             self.engine.model, "_orig_mod", self.engine.model
         )  # remove "_orig_mod" phrases
@@ -614,7 +614,7 @@ class BinocularIntegration:
         # save figure
         if save_flag == 1:
             fig.savefig(
-                f"{self.bi_dir}/integration_ratio_{self.engine.interaction}.pdf",
+                f"{self.bi_dir}/integration_ratio_{self.engine.binocular_interaction}.pdf",
                 dpi=600,
                 bbox_inches="tight",
             )
@@ -715,7 +715,7 @@ class BinocularIntegration:
         # save figure
         if save_flag == 1:
             fig.savefig(
-                f"{self.bi_dir}/integration_count_{self.engine.interaction}.pdf",
+                f"{self.bi_dir}/integration_count_{self.engine.binocular_interaction}.pdf",
                 dpi=600,
                 bbox_inches="tight",
             )

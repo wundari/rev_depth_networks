@@ -45,7 +45,13 @@ class EngineBase:
 
         self.config = config
         self.model_name = config.model_name
-        self.interaction = config.binocular_interaction
+        self.binocular_interaction = config.binocular_interaction
+        self.dataset = config.dataset
+
+        self.seed = config.seed
+        self.epoch = config.epoch_to_load
+        self.iter = config.iter_to_load
+
         self.device = config.device
         self.h = config.img_height
         self.w = config.img_width
@@ -107,11 +113,11 @@ class EngineBase:
         # find seed index
         seed_idx = self.config.seed_to_analyse.index(self.config.seed)
 
-        if self.interaction == "default":
+        if self.binocular_interaction == "default":
             epoch, iter = self.config.epoch_iter_to_load_default[seed_idx]
-        elif self.interaction == "bem":
+        elif self.binocular_interaction == "bem":
             epoch, iter = self.config.epoch_iter_to_load_bem[seed_idx]
-        elif self.interaction == "cmm":
+        elif self.binocular_interaction == "cmm":
             epoch, iter = self.config.epoch_iter_to_load_cmm[seed_idx]
         else:  # sum_diff
             epoch, iter = self.config.epoch_iter_to_load_sum_diff[seed_idx]
@@ -121,6 +127,54 @@ class EngineBase:
         self.config.iter_to_load = iter
         self.config.model_pretrained = f"epoch_{epoch}_iter_{iter}_model_best.pth.tar"  # pretrained file name, e.g: epoch_1_model.pth.tar
         self.config.experiment_id = self.config.seed
+
+    def update_network_config(
+        self, interaction: str, seed: int, epoch: int, iter: int
+    ) -> None:
+        """
+        Update the network configuration and directories for storing
+        the results
+        """
+
+        # old config, for printing purposes
+        interaction_old = self.binocular_interaction
+        seed_old = self.seed
+        epoch_old = self.epoch
+        iter_old = self.iter
+        # batch_size_rds_old = self.batch_size_rds
+
+        # update binocular_interaction, seed, epoch, iter, and model_pretrained in
+        # the class and config
+        self.binocular_interaction = interaction
+        self.config.binocular_interaction = interaction
+        self.seed = seed
+        self.config.seed = seed
+        self.config.experiment_id = seed
+        self.epoch = epoch
+        self.config.epoch_to_load = epoch
+        self.iter = iter
+        self.config.iter_to_load = iter
+        self.model_pretrained = f"epoch_{self.epoch}_iter_{self.iter}_model_best.pth.tar"  # pretrained file name, e.g: epoch_1_model.pth.tar
+        self.config.model_pretrained = self.model_pretrained
+
+        # update the experiment directories based on the new interaction
+        self.save_dir = (
+            f"{self.model_name}/run/{self.dataset}/"
+            + f"bino_interaction_{self.binocular_interaction}/"
+        )
+        self.experiment_dir = f"{self.save_dir}/" + f"experiment_{self.seed}"
+
+        print(
+            "==============================================================\n"
+            + f"Updating {self.model_name} config:\n"
+            + "==============================================================\n"
+            + f"Binocular interaction: {interaction_old} => {self.config.binocular_interaction}\n"
+            + f"Seed: {seed_old} => {self.config.seed}\n"
+            + f"Epoch: {epoch_old} => {self.config.epoch_to_load}\n"
+            + f"Iter: {iter_old} => {self.config.iter_to_load}\n"
+            + f"Experiment directory: {self.experiment_dir}\n"
+            + "==============================================================\n"
+        )
 
     def __getconfig__(self):
         print(
